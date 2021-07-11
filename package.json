@@ -1,6 +1,6 @@
 {
   "name": "echarts",
-  "version": "5.1.1",
+  "version": "5.1.2",
   "description": "Apache ECharts is a powerful, interactive charting and data visualization library for browser",
   "license": "Apache-2.0",
   "keywords": [
@@ -53,6 +53,7 @@
     "test:visual": "node test/runTest/server.js",
     "test": "npx jest --config test/ut/jest.config.js",
     "test:single": "npx jest --config test/ut/jest.config.js --coverage=false -t",
+    "test:single:debug": "npx --node-arg=--inspect-brk jest --runInBand --config test/ut/jest.config.js --coverage=false -t",
     "test:dts": "node build/testDts.js",
     "mktest": "node test/build/mktest.js",
     "mktest:help": "node test/build/mktest.js -h",
@@ -62,8 +63,8 @@
     "lint:dist": "echo 'It might take a while. Please wait ...' && npx jshint --config .jshintrc-dist dist/echarts.js"
   },
   "dependencies": {
-    "tslib": "2.0.3",
-    "zrender": "npm:zrender-nightly@^5.1.1-dev.20210512"
+    "tslib": "2.3.0",
+    "zrender": "npm:zrender-nightly@^5.1.2-dev.20210701"
   },
   "devDependencies": {
     "@babel/code-frame": "7.10.4",
@@ -105,6 +106,6 @@
     "socket.io": "2.2.0",
     "terser": "^5.3.8",
     "ts-jest": "^26.4.3",
-    "typescript": "4.1.2"
+    "typescript": "4.3.5"
   }
 }
