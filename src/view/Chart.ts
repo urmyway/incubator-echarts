@@ -22,7 +22,7 @@ import Group from 'zrender/src/graphic/Group';
 import * as componentUtil from '../util/component';
 import * as clazzUtil from '../util/clazz';
 import * as modelUtil from '../util/model';
-import { enterEmphasis, leaveEmphasis, getHighlightDigit } from '../util/states';
+import { enterEmphasis, leaveEmphasis, getHighlightDigit, isHighDownDispatcher } from '../util/states';
 import {createTask, TaskResetCallbackReturn} from '../core/task';
 import createRenderPlanner from '../chart/helper/createRenderPlanner';
 import SeriesModel from '../model/Series';
@@ -34,7 +34,9 @@ import {
     StageHandlerPlanReturn, DisplayState, StageHandlerProgressParams, ECElementEvent
 } from '../util/types';
 import { SeriesTaskContext, SeriesTask } from '../core/Scheduler';
-import List from '../data/List';
+import SeriesData from '../data/SeriesData';
+import { traverseElements } from '../util/graphic';
+import { error } from '../util/log';
 
 const inner = modelUtil.makeInner<{
     updateMethod: keyof ChartView
@@ -95,7 +97,7 @@ interface ChartView {
 }
 class ChartView {
 
-    // [Caution]: Becuase this class or desecendants can be used as `XXX.extend(subProto)`,
+    // [Caution]: Because this class or desecendants can be used as `XXX.extend(subProto)`,
     // the class members must not be initialized in constructor or declaration place.
     // Otherwise there is bad case:
     //   class A {xxx = 1;}
@@ -146,24 +148,44 @@ class ChartView {
 
     init(ecModel: GlobalModel, api: ExtensionAPI): void {}
 
-    render(seriesModel: SeriesModel, ecModel: GlobalModel, api: ExtensionAPI, payload: Payload): void {}
+    render(seriesModel: SeriesModel, ecModel: GlobalModel, api: ExtensionAPI, payload: Payload): void {
+        if (__DEV__) {
+            throw new Error('render method must been implemented');
+        }
+    }
 
     /**
      * Highlight series or specified data item.
      */
     highlight(seriesModel: SeriesModel, ecModel: GlobalModel, api: ExtensionAPI, payload: Payload): void {
-        toggleHighlight(seriesModel.getData(), payload, 'emphasis');
+        const data = seriesModel.getData(payload && payload.dataType);
+        if (!data) {
+            if (__DEV__) {
+                error(`Unknown dataType ${payload.dataType}`);
+            }
+            return;
+        }
+        toggleHighlight(data, payload, 'emphasis');
     }
 
     /**
      * Downplay series or specified data item.
      */
     downplay(seriesModel: SeriesModel, ecModel: GlobalModel, api: ExtensionAPI, payload: Payload): void {
-        toggleHighlight(seriesModel.getData(), payload, 'normal');
+        const data = seriesModel.getData(payload && payload.dataType);
+        if (!data) {
+            if (__DEV__) {
+                error(`Unknown dataType ${payload.dataType}`);
+            }
+            return;
+        }
+        toggleHighlight(data, payload, 'normal');
     }
 
     /**
-     * Remove self.
+     * `remove` only occurs when series is filtered out, typically by legend.
+     * And theirafter the view can only be rendered again via
+     * `ChartView['render']` or `ChartView['incrementalPrepareRender']`.
      */
     remove(ecModel: GlobalModel, api: ExtensionAPI): void {
         this.group.removeAll();
@@ -180,13 +202,23 @@ class ChartView {
     }
 
     // FIXME never used?
-    updateLayout(seriesModel: SeriesModel, ecModel: GlobalModel, api: ExtensionAPI, payload: Payload): void {
-        this.render(seriesModel, ecModel, api, payload);
-    }
+    // updateLayout(seriesModel: SeriesModel, ecModel: GlobalModel, api: ExtensionAPI, payload: Payload): void {
+    //     this.render(seriesModel, ecModel, api, payload);
+    // }
 
     // FIXME never used?
     updateVisual(seriesModel: SeriesModel, ecModel: GlobalModel, api: ExtensionAPI, payload: Payload): void {
         this.render(seriesModel, ecModel, api, payload);
+    }
+
+    /**
+     * Traverse the new rendered elements.
+     *
+     * It will traverse the new added element in progressive rendering.
+     * And traverse all in normal rendering.
+     */
+    eachRendered(cb: (el: Element) => boolean | void) {
+        traverseElements(this.group, cb);
     }
 
     static markUpdateMethod(payload: Payload, methodName: keyof ChartView): void {
@@ -201,12 +233,12 @@ class ChartView {
  * Set state of single element
  */
 function elSetState(el: Element, state: DisplayState, highlightDigit: number) {
-    if (el) {
+    if (el && isHighDownDispatcher(el)) {
         (state === 'emphasis' ? enterEmphasis : leaveEmphasis)(el, highlightDigit);
     }
 }
 
-function toggleHighlight(data: List, payload: Payload, state: DisplayState) {
+function toggleHighlight(data: SeriesData, payload: Payload, state: DisplayState) {
     const dataIndex = modelUtil.queryDataIndex(data, payload);
 
     const highlightDigit = (payload && payload.highlightKey != null)
@@ -219,6 +251,9 @@ function toggleHighlight(data: List, payload: Payload, state: DisplayState) {
         });
     }
     else {
+        // In progressive mode, `data._graphicEls` has typically no items,
+        // thereby skipping this hover style changing.
+        // PENDING: more robust approaches?
         data.eachItemGraphicEl(function (el) {
             elSetState(el, state, highlightDigit);
         });

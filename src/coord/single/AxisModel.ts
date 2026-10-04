@@ -23,21 +23,36 @@ import {AxisModelCommonMixin} from '../axisModelCommonMixin';
 import Single from './Single';
 import SingleAxis from './SingleAxis';
 import { AxisBaseOption } from '../axisCommonTypes';
-import { BoxLayoutOptionMixin, LayoutOrient } from '../../util/types';
+import {
+    BoxLayoutOptionMixin, ComponentOnCalendarOptionMixin, ComponentOnMatrixOptionMixin, LayoutOrient
+} from '../../util/types';
 import { AxisBaseModel } from '../AxisBaseModel';
 import { mixin } from 'zrender/src/core/util';
 
+
+// PENDING: For historical reason,
+//  in ec option:
+//    It can only declare as `series:{coordinateSystem: "singleAxis", ...}`
+//    rather than 'single'. Therefore every `.get('coordinateSystem')` must
+//    match "singleAxis". (See `referHelper.ts`)
+//    And the component name can only be `singleAxis: {...}`.
+//  But the internal convention uses 'singe' as coordinate system name
+//  and dimension name.
+export const COORD_SYS_TYPE_SINGLE = 'single';
+export const COORD_SYS_TYPE_SINGLE_AXIS_COMPATIBLE = 'singleAxis';
+export const COMPONENT_TYPE_SINGLE_AXIS = 'singleAxis';
+
 export type SingleAxisPosition = 'top' | 'bottom' | 'left' | 'right';
 
-export interface SingleAxisOption extends AxisBaseOption, BoxLayoutOptionMixin {
+export type SingleAxisOption = AxisBaseOption & BoxLayoutOptionMixin & {
     mainType?: 'singleAxis'
     position?: SingleAxisPosition
     orient?: LayoutOrient
-}
+} & ComponentOnCalendarOptionMixin & ComponentOnMatrixOptionMixin;
 
 class SingleAxisModel extends ComponentModel<SingleAxisOption>
     implements AxisBaseModel<SingleAxisOption> {
-    static type = 'singleAxis';
+    static type = COMPONENT_TYPE_SINGLE_AXIS;
     type = SingleAxisModel.type;
 
     static readonly layoutMode = 'box';
@@ -97,12 +112,16 @@ class SingleAxisModel extends ComponentModel<SingleAxisOption>
                 type: 'dashed',
                 opacity: 0.2
             }
-        }
+        },
+
+        jitter: 0,
+        jitterOverlap: true,
+        jitterMargin: 2,
     };
 }
 
 interface SingleAxisModel extends AxisModelCommonMixin<SingleAxisOption>,
-    AxisModelExtendedInCreator<SingleAxisOption> {}
+    AxisModelExtendedInCreator {}
 
 mixin(SingleAxisModel, AxisModelCommonMixin.prototype);
 

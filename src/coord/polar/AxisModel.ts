@@ -27,7 +27,7 @@ import RadiusAxis from './RadiusAxis';
 import { AxisBaseModel } from '../AxisBaseModel';
 import { SINGLE_REFERRING } from '../../util/model';
 
-export interface AngleAxisOption extends AxisBaseOption {
+export type AngleAxisOption = AxisBaseOption & {
     mainType?: 'angleAxis';
     /**
      * Index of host polar component
@@ -39,14 +39,13 @@ export interface AngleAxisOption extends AxisBaseOption {
     polarId?: string;
 
     startAngle?: number;
+    endAngle?: number;
     clockwise?: boolean;
 
-    splitNumber?: number;
-
     axisLabel?: AxisBaseOption['axisLabel']
-}
+};
 
-export interface RadiusAxisOption extends AxisBaseOption {
+export type RadiusAxisOption = AxisBaseOption & {
     mainType?: 'radiusAxis';
     /**
      * Index of host polar component
@@ -56,7 +55,7 @@ export interface RadiusAxisOption extends AxisBaseOption {
      * Id of host polar component
      */
     polarId?: string;
-}
+};
 
 type PolarAxisOption = AngleAxisOption | RadiusAxisOption;
 
@@ -72,7 +71,7 @@ class PolarAxisModel<T extends PolarAxisOption = PolarAxisOption> extends Compon
 }
 
 interface PolarAxisModel<T extends PolarAxisOption = PolarAxisOption>
-    extends AxisModelCommonMixin<T>, AxisModelExtendedInCreator<T> {}
+    extends AxisModelCommonMixin<T>, AxisModelExtendedInCreator {}
 
 zrUtil.mixin(PolarAxisModel, AxisModelCommonMixin);
 

@@ -124,10 +124,12 @@ var localeObj = {
             graph: 'Relationship graph',
             sankey: 'Sankey diagram',
             funnel: 'Funnel chart',
-            gauge: 'Guage',
+            gauge: 'Gauge',
             pictorialBar: 'Pictorial bar',
             themeRiver: 'Theme River Map',
-            sunburst: 'Sunburst'
+            sunburst: 'Sunburst',
+            custom: 'Custom chart',
+            chart: 'Chart'
         }
     },
     aria: {
@@ -163,6 +165,7 @@ var localeObj = {
         }
     }
 };
+
     for (var key in localeObj) {
         if (localeObj.hasOwnProperty(key)) {
             exports[key] = localeObj[key];

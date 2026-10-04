@@ -17,23 +17,28 @@
 * under the License.
 */
 
-import * as layout from '../../util/layout';
 import * as zrUtil from 'zrender/src/core/util';
-import {groupData} from '../../util/model';
+import {createSimpleOverallStageHandler, groupData} from '../../util/model';
 import ExtensionAPI from '../../core/ExtensionAPI';
-import SankeySeriesModel, { SankeySeriesOption, SankeyNodeItemOption } from './SankeySeries';
+import SankeySeriesModel, { SankeySeriesOption, SankeyNodeItemOption, SERIES_TYPE_SANKEY } from './SankeySeries';
 import { GraphNode, GraphEdge } from '../../data/Graph';
 import { LayoutOrient } from '../../util/types';
 import GlobalModel from '../../model/Global';
+import { createBoxLayoutReference, getLayoutRect } from '../../util/layout';
+import { asc } from '../../util/number';
 
-export default function sankeyLayout(ecModel: GlobalModel, api: ExtensionAPI) {
 
-    ecModel.eachSeriesByType('sankey', function (seriesModel: SankeySeriesModel) {
+export const sankeyLayoutStageHandler = createSimpleOverallStageHandler(SERIES_TYPE_SANKEY, sankeyLayout);
+
+function sankeyLayout(ecModel: GlobalModel, api: ExtensionAPI) {
+
+    ecModel.eachSeriesByType(SERIES_TYPE_SANKEY, function (seriesModel: SankeySeriesModel) {
 
         const nodeWidth = seriesModel.get('nodeWidth');
         const nodeGap = seriesModel.get('nodeGap');
 
-        const layoutInfo = getViewRect(seriesModel, api);
+        const refContainer = createBoxLayoutReference(seriesModel, api).refContainer;
+        const layoutInfo = getLayoutRect(seriesModel.getBoxLayoutParams(), refContainer);
 
         seriesModel.layoutInfo = layoutInfo;
 
@@ -56,21 +61,10 @@ export default function sankeyLayout(ecModel: GlobalModel, api: ExtensionAPI) {
         const orient = seriesModel.get('orient');
 
         const nodeAlign = seriesModel.get('nodeAlign');
+        const sort = seriesModel.get('sort');
 
-        layoutSankey(nodes, edges, nodeWidth, nodeGap, width, height, iterations, orient, nodeAlign);
+        layoutSankey(nodes, edges, nodeWidth, nodeGap, width, height, iterations, orient, nodeAlign, sort);
     });
-}
-
-/**
- * Get the layout position of the whole view
- */
-function getViewRect(seriesModel: SankeySeriesModel, api: ExtensionAPI) {
-    return layout.getLayoutRect(
-        seriesModel.getBoxLayoutParams(), {
-            width: api.getWidth(),
-            height: api.getHeight()
-        }
-    );
 }
 
 function layoutSankey(
@@ -82,10 +76,11 @@ function layoutSankey(
     height: number,
     iterations: number,
     orient: LayoutOrient,
-    nodeAlign: SankeySeriesOption['nodeAlign']
+    nodeAlign: SankeySeriesOption['nodeAlign'],
+    sort: SankeySeriesOption['sort']
 ) {
     computeNodeBreadths(nodes, edges, nodeWidth, width, height, orient, nodeAlign);
-    computeNodeDepths(nodes, edges, height, width, nodeGap, iterations, orient);
+    computeNodeDepths(nodes, edges, height, width, nodeGap, iterations, orient, sort);
     computeEdgeDepths(nodes, orient);
 }
 
@@ -122,7 +117,7 @@ function computeNodeBreadths(
     const remainEdges = [];
     // Storage each node's indegree.
     const indegreeArr = [];
-    //Used to storage the node with indegree is equal to 0.
+    // Used to storage the node with indegree is equal to 0.
     let zeroIndegrees: GraphNode[] = [];
     let nextTargetNode: GraphNode[] = [];
     let x = 0;
@@ -156,11 +151,11 @@ function computeNodeBreadths(
 
             for (let edgeIdx = 0; edgeIdx < node.outEdges.length; edgeIdx++) {
                 const edge = node.outEdges[edgeIdx];
-                const indexEdge = edges.indexOf(edge);
+                const indexEdge = zrUtil.indexOf(edges, edge);
                 remainEdges[indexEdge] = 0;
                 const targetNode = edge.node2;
-                const nodeIndex = nodes.indexOf(targetNode);
-                if (--indegreeArr[nodeIndex] === 0 && nextTargetNode.indexOf(targetNode) < 0) {
+                const nodeIndex = zrUtil.indexOf(nodes, targetNode);
+                if (--indegreeArr[nodeIndex] === 0 && zrUtil.indexOf(nextTargetNode, targetNode) < 0) {
                     nextTargetNode.push(targetNode);
                 }
             }
@@ -208,7 +203,7 @@ function adjustNodeWithNodeAlign(
                 node.setLayout({skNodeHeight: nodeHeight}, true);
                 for (let j = 0; j < node.inEdges.length; j++) {
                     const edge = node.inEdges[j];
-                    if (nextSourceNode.indexOf(edge.node1) < 0) {
+                    if (zrUtil.indexOf(nextSourceNode, edge.node1) < 0) {
                         nextSourceNode.push(edge.node1);
                     }
                 }
@@ -268,6 +263,7 @@ function scaleNodeBreadths(nodes: GraphNode[], kx: number, orient: LayoutOrient)
  * @param nodeGap  the vertical distance between two nodes
  *     in the same column.
  * @param iterations  the number of iterations for the algorithm
+ * @param sort  sorting method used when resolving collisions within each column
  */
 function computeNodeDepths(
     nodes: GraphNode[],
@@ -276,21 +272,22 @@ function computeNodeDepths(
     width: number,
     nodeGap: number,
     iterations: number,
-    orient: LayoutOrient
+    orient: LayoutOrient,
+    sort: SankeySeriesOption['sort']
 ) {
     const nodesByBreadth = prepareNodesByBreadth(nodes, orient);
 
     initializeNodeDepth(nodesByBreadth, edges, height, width, nodeGap, orient);
-    resolveCollisions(nodesByBreadth, nodeGap, height, width, orient);
+    resolveCollisions(nodesByBreadth, nodeGap, height, width, orient, sort);
 
     for (let alpha = 1; iterations > 0; iterations--) {
         // 0.99 is a experience parameter, ensure that each iterations of
         // changes as small as possible.
         alpha *= 0.99;
         relaxRightToLeft(nodesByBreadth, alpha, orient);
-        resolveCollisions(nodesByBreadth, nodeGap, height, width, orient);
+        resolveCollisions(nodesByBreadth, nodeGap, height, width, orient, sort);
         relaxLeftToRight(nodesByBreadth, alpha, orient);
-        resolveCollisions(nodesByBreadth, nodeGap, height, width, orient);
+        resolveCollisions(nodesByBreadth, nodeGap, height, width, orient, sort);
     }
 }
 
@@ -301,9 +298,7 @@ function prepareNodesByBreadth(nodes: GraphNode[], orient: LayoutOrient) {
     const groupResult = groupData(nodes, function (node) {
         return node.getLayout()[keyAttr] as number;
     });
-    groupResult.keys.sort(function (a, b) {
-        return a - b;
-    });
+    asc(groupResult.keys);
     zrUtil.each(groupResult.keys, function (key) {
         nodesByBreadth.push(groupResult.buckets.get(key));
     });
@@ -366,13 +361,16 @@ function resolveCollisions(
     nodeGap: number,
     height: number,
     width: number,
-    orient: LayoutOrient
+    orient: LayoutOrient,
+    sort: SankeySeriesOption['sort']
 ) {
     const keyAttr = orient === 'vertical' ? 'x' : 'y';
     zrUtil.each(nodesByBreadth, function (nodes) {
-        nodes.sort(function (a, b) {
-            return a.getLayout()[keyAttr] - b.getLayout()[keyAttr];
-        });
+        if (sort !== null) {
+            nodes.sort(function (a, b) {
+                return a.getLayout()[keyAttr] - b.getLayout()[keyAttr];
+            });
+        }
         let nodeX;
         let node;
         let dy;

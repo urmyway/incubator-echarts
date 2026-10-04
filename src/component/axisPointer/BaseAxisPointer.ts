@@ -33,6 +33,7 @@ import { VerticalAlign, HorizontalAlign, CommonAxisPointerOption } from '../../u
 import { PathProps } from 'zrender/src/graphic/Path';
 import Model from '../../model/Model';
 import { TextProps } from 'zrender/src/graphic/Text';
+import { calcBandWidth } from '../../coord/axisBand';
 
 const inner = makeInner<{
     lastProp?: DisplayableProps
@@ -135,7 +136,7 @@ class BaseAxisPointer implements AxisPointer {
         this._axisPointerModel = axisPointerModel;
         this._api = api;
 
-        // Optimize: `render` will be called repeatly during mouse move.
+        // Optimize: `render` will be called repeatedly during mouse move.
         // So it is power consuming if performing `render` each time,
         // especially on mobile device.
         if (!forceRender
@@ -220,7 +221,7 @@ class BaseAxisPointer implements AxisPointer {
 
         if (animation === 'auto' || animation == null) {
             const animationThreshold = this.animationThreshold;
-            if (isCategoryAxis && axis.getBandWidth() > animationThreshold) {
+            if (isCategoryAxis && calcBandWidth(axis).w > animationThreshold) {
                 return true;
             }
 
@@ -251,7 +252,7 @@ class BaseAxisPointer implements AxisPointer {
         axisPointerModel: AxisPointerModel,
         api: ExtensionAPI
     ) {
-        // Shoule be implemenented by sub-class.
+        // Should be implemented by sub-class.
     }
 
     /**
@@ -360,7 +361,7 @@ class BaseAxisPointer implements AxisPointer {
                     cursor: 'move',
                     draggable: true,
                     onmousemove(e) {
-                        // Fot mobile devicem, prevent screen slider on the button.
+                        // For mobile device, prevent screen slider on the button.
                         eventTool.stop(e.event);
                     },
                     onmousedown: bind(this._onHandleDragMove, this, 0, 0),
@@ -493,6 +494,8 @@ class BaseAxisPointer implements AxisPointer {
             this._handle = null;
             this._payloadInfo = null;
         }
+
+        throttleUtil.clear(this, '_doDispatchAxisPointer');
     }
 
     /**

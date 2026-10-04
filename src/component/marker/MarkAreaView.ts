@@ -20,19 +20,19 @@
 // TODO Optimize on polar
 
 import * as colorUtil from 'zrender/src/tool/color';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import * as numberUtil from '../../util/number';
 import * as graphic from '../../util/graphic';
-import { enableHoverEmphasis, setStatesStylesFromModel } from '../../util/states';
+import { toggleHoverEmphasis, setStatesStylesFromModel } from '../../util/states';
 import * as markerHelper from './markerHelper';
 import MarkerView from './MarkerView';
-import { retrieve, mergeAll, map, defaults, curry, filter, HashMap } from 'zrender/src/core/util';
-import { ScaleDataValue, ParsedValue, ZRColor } from '../../util/types';
+import { retrieve, mergeAll, map, curry, filter, HashMap, extend, isString, retrieve2 } from 'zrender/src/core/util';
+import { ScaleDataValue, ZRColor } from '../../util/types';
 import { CoordinateSystem, isCoordinateSystemType } from '../../coord/CoordinateSystem';
 import MarkAreaModel, { MarkArea2DDataItemOption } from './MarkAreaModel';
 import SeriesModel from '../../model/Series';
 import Cartesian2D from '../../coord/cartesian/Cartesian2D';
-import DataDimensionInfo from '../../data/DataDimensionInfo';
+import SeriesDimensionDefine from '../../data/SeriesDimensionDefine';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
 import MarkerModel from './MarkerModel';
@@ -41,13 +41,15 @@ import { getVisualFromData } from '../../visual/helper';
 import { setLabelStyle, getLabelStatesModels } from '../../label/labelStyle';
 import { getECData } from '../../util/innerStore';
 import Axis2D from '../../coord/cartesian/Axis2D';
+import { parseDataValue } from '../../data/helper/dataValueHelper';
+import tokens from '../../visual/tokens';
 
 interface MarkAreaDrawGroup {
     group: graphic.Group
 }
 
 const inner = makeInner<{
-    data: List<MarkAreaModel>
+    data: SeriesData<MarkAreaModel>
 }, MarkAreaDrawGroup>();
 
 // Merge two ends option into one.
@@ -65,8 +67,15 @@ const markAreaTransform = function (
     maModel: MarkAreaModel,
     item: MarkArea2DDataItemOption
 ): MarkAreaMergedItemOption {
-    const lt = markerHelper.dataTransform(seriesModel, item[0]);
-    const rb = markerHelper.dataTransform(seriesModel, item[1]);
+    // item may be null
+    const item0 = item[0];
+    const item1 = item[1];
+    if (!item0 || !item1) {
+        return;
+    }
+
+    const lt = markerHelper.dataTransform(seriesModel, item0);
+    const rb = markerHelper.dataTransform(seriesModel, item1);
 
     // FIXME make sure lt is less than rb
     const ltCoord = lt.coord;
@@ -90,7 +99,7 @@ const markAreaTransform = function (
     return result;
 };
 
-function isInifinity(val: ScaleDataValue) {
+function isInfinity(val: ScaleDataValue) {
     return !isNaN(val as number) && !isFinite(val as number);
 }
 
@@ -102,12 +111,22 @@ function ifMarkAreaHasOnlyDim(
     coordSys: CoordinateSystem
 ) {
     const otherDimIndex = 1 - dimIndex;
-    return isInifinity(fromCoord[otherDimIndex]) && isInifinity(toCoord[otherDimIndex]);
+    return isInfinity(fromCoord[otherDimIndex]) && isInfinity(toCoord[otherDimIndex]);
 }
 
 function markAreaFilter(coordSys: CoordinateSystem, item: MarkAreaMergedItemOption) {
     const fromCoord = item.coord[0];
     const toCoord = item.coord[1];
+    const item0 = {
+        coord: fromCoord,
+        x: item.x0,
+        y: item.y0
+    };
+    const item1 = {
+        coord: toCoord,
+        x: item.x1,
+        y: item.y1
+    };
     if (isCoordinateSystemType<Cartesian2D>(coordSys, 'cartesian2d')) {
         // In case
         // {
@@ -122,22 +141,20 @@ function markAreaFilter(coordSys: CoordinateSystem, item: MarkAreaMergedItemOpti
         ) {
             return true;
         }
+        // Directly returning true may also do the work,
+        // because markArea will not be shown automatically
+        // when it's not included in coordinate system.
+        // But filtering ahead can avoid keeping rendering markArea
+        // when there are too many of them.
+        return markerHelper.zoneFilter(coordSys, item0, item1);
     }
-    return markerHelper.dataFilter(coordSys, {
-            coord: fromCoord,
-            x: item.x0,
-            y: item.y0
-        })
-        || markerHelper.dataFilter(coordSys, {
-            coord: toCoord,
-            x: item.x1,
-            y: item.y1
-        });
+    return markerHelper.dataFilter(coordSys, item0)
+        || markerHelper.dataFilter(coordSys, item1);
 }
 
 // dims can be ['x0', 'y0'], ['x1', 'y1'], ['x0', 'y1'], ['x1', 'y0']
 function getSingleMarkerEndPoint(
-    data: List<MarkAreaModel>,
+    data: SeriesData<MarkAreaModel>,
     idx: number,
     dims: typeof dimPermutations[number],
     seriesModel: SeriesModel,
@@ -155,9 +172,28 @@ function getSingleMarkerEndPoint(
     else {
         // Chart like bar may have there own marker positioning logic
         if (seriesModel.getMarkerPosition) {
-            // Use the getMarkerPoisition
+            // Consider the case that user input the right-bottom point first
+            // Pick the larger x and y as 'x1' and 'y1'
+            const pointValue0 = data.getValues(['x0', 'y0'], idx);
+            const pointValue1 = data.getValues(['x1', 'y1'], idx);
+            const clampPointValue0 = coordSys.clampData(pointValue0);
+            const clampPointValue1 = coordSys.clampData(pointValue1);
+            const pointValue = [];
+            if (dims[0] === 'x0') {
+                pointValue[0] = (clampPointValue0[0] > clampPointValue1[0]) ? pointValue1[0] : pointValue0[0];
+            }
+            else {
+                pointValue[0] = (clampPointValue0[0] > clampPointValue1[0]) ? pointValue0[0] : pointValue1[0];
+            }
+            if (dims[1] === 'y0') {
+                pointValue[1] = (clampPointValue0[1] > clampPointValue1[1]) ? pointValue1[1] : pointValue0[1];
+            }
+            else {
+                pointValue[1] = (clampPointValue0[1] > clampPointValue1[1]) ? pointValue0[1] : pointValue1[1];
+            }
+            // Use the getMarkerPosition
             point = seriesModel.getMarkerPosition(
-                data.getValues(dims, idx)
+                pointValue, dims, true
             );
         }
         else {
@@ -173,10 +209,10 @@ function getSingleMarkerEndPoint(
             const yAxis = coordSys.getAxis('y') as Axis2D;
             const x = data.get(dims[0], idx) as number;
             const y = data.get(dims[1], idx) as number;
-            if (isInifinity(x)) {
+            if (isInfinity(x)) {
                 point[0] = xAxis.toGlobalCoord(xAxis.getExtent()[dims[0] === 'x0' ? 0 : 1]);
             }
-            else if (isInifinity(y)) {
+            else if (isInfinity(y)) {
                 point[1] = yAxis.toGlobalCoord(yAxis.getExtent()[dims[1] === 'y0' ? 0 : 1]);
             }
         }
@@ -193,7 +229,7 @@ function getSingleMarkerEndPoint(
     return point;
 }
 
-const dimPermutations = [['x0', 'y0'], ['x1', 'y0'], ['x1', 'y1'], ['x0', 'y1']] as const;
+export const dimPermutations = [['x0', 'y0'], ['x1', 'y0'], ['x1', 'y1'], ['x0', 'y1']] as const;
 
 class MarkAreaView extends MarkerView {
 
@@ -266,12 +302,13 @@ class MarkAreaView extends MarkerView {
                 allClipped: allClipped
             });
 
-
-            const style = areaData.getItemModel<MarkAreaMergedItemOption>(idx).getModel('itemStyle').getItemStyle();
+            const itemModel = areaData.getItemModel<MarkAreaMergedItemOption>(idx);
+            const style = itemModel.getModel('itemStyle').getItemStyle();
+            const z2 = itemModel.get('z2');
             const color = getVisualFromData(seriesData, 'color') as ZRColor;
             if (!style.fill) {
                 style.fill = color;
-                if (typeof style.fill === 'string') {
+                if (isString(style.fill)) {
                     style.fill = colorUtil.modifyAlpha(style.fill, 0.4);
                 }
             }
@@ -280,14 +317,17 @@ class MarkAreaView extends MarkerView {
             }
             // Visual
             areaData.setItemVisual(idx, 'style', style);
+            areaData.setItemVisual(idx, 'z2', retrieve2(z2, 0));
         });
 
 
         areaData.diff(inner(polygonGroup).data)
             .add(function (idx) {
                 const layout = areaData.getItemLayout(idx);
+                const z2 = areaData.getItemVisual(idx, 'z2');
                 if (!layout.allClipped) {
                     const polygon = new graphic.Polygon({
+                        z2: retrieve2(z2, 0),
                         shape: {
                             points: layout.points
                         }
@@ -299,9 +339,11 @@ class MarkAreaView extends MarkerView {
             .update(function (newIdx, oldIdx) {
                 let polygon = inner(polygonGroup).data.getItemGraphicEl(oldIdx) as graphic.Polygon;
                 const layout = areaData.getItemLayout(newIdx);
+                const z2 = areaData.getItemVisual(newIdx, 'z2');
                 if (!layout.allClipped) {
                     if (polygon) {
                         graphic.updateProps(polygon, {
+                            z2: retrieve2(z2, 0),
                             shape: {
                                 points: layout.points
                             }
@@ -338,14 +380,14 @@ class MarkAreaView extends MarkerView {
                     labelFetcher: maModel,
                     labelDataIndex: idx,
                     defaultText: areaData.getName(idx) || '',
-                    inheritColor: typeof style.fill === 'string'
-                        ? colorUtil.modifyAlpha(style.fill, 1) : '#000'
+                    inheritColor: isString(style.fill)
+                        ? colorUtil.modifyAlpha(style.fill, 1) : tokens.color.neutral99
                 }
             );
 
             setStatesStylesFromModel(polygon, itemModel);
 
-            enableHoverEmphasis(polygon);
+            toggleHoverEmphasis(polygon, null, null, itemModel.get(['emphasis', 'disabled']));
 
             getECData(polygon).dataModel = maModel;
         });
@@ -362,33 +404,34 @@ function createList(
     maModel: MarkAreaModel
 ) {
 
-    let coordDimsInfos: DataDimensionInfo[];
-    let areaData: List<MarkAreaModel>;
+    let areaData: SeriesData<MarkAreaModel>;
+    let dataDims: SeriesDimensionDefine[];
     const dims = ['x0', 'y0', 'x1', 'y1'];
     if (coordSys) {
-        coordDimsInfos = map(coordSys && coordSys.dimensions, function (coordDim) {
+        const coordDimsInfos: SeriesDimensionDefine[] = map(coordSys && coordSys.dimensions, function (coordDim) {
             const data = seriesModel.getData();
             const info = data.getDimensionInfo(
                 data.mapDimension(coordDim)
-            ) || {};
+            ) || {} as SeriesDimensionDefine;
             // In map series data don't have lng and lat dimension. Fallback to same with coordSys
-            return defaults({
-                name: coordDim
-            }, info);
+            return extend(extend({}, info), {
+                name: coordDim,
+                // DON'T use ordinalMeta to parse and collect ordinal.
+                ordinalMeta: null,
+            });
         });
-        areaData = new List(map(dims, function (dim, idx) {
-            return {
-                name: dim,
-                type: coordDimsInfos[idx % 2].type
-            };
-        }), maModel);
+        dataDims = map(dims, (dim, idx) => ({
+            name: dim,
+            type: coordDimsInfos[idx % 2].type
+        }));
+        areaData = new SeriesData(dataDims, maModel);
     }
     else {
-        coordDimsInfos = [{
+        dataDims = [{
             name: 'value',
             type: 'float'
         }];
-        areaData = new List(coordDimsInfos, maModel);
+        areaData = new SeriesData(dataDims, maModel);
     }
 
     let optData = map(maModel.get('data'), curry(
@@ -400,17 +443,15 @@ function createList(
         );
     }
 
-    const dimValueGetter = coordSys ? function (
-        item: MarkAreaMergedItemOption,
-        dimName: string,
-        dataIndex: number,
-        dimIndex: number
-    ) {
-        // TODO should convert to ParsedValue?
-        return item.coord[Math.floor(dimIndex / 2)][dimIndex % 2] as ParsedValue;
-    } : function (item: MarkAreaMergedItemOption) {
-        return item.value;
-    };
+    const dimValueGetter: markerHelper.MarkerDimValueGetter<MarkAreaMergedItemOption> = coordSys
+        ? function (item, dimName, dataIndex, dimIndex) {
+            // TODO should convert to ParsedValue?
+            const rawVal = item.coord[Math.floor(dimIndex / 2)][dimIndex % 2];
+            return parseDataValue(rawVal, dataDims[dimIndex]);
+        }
+        : function (item, dimName, dataIndex, dimIndex) {
+            return parseDataValue(item.value, dataDims[dimIndex]);
+        };
     areaData.initData(optData, null, dimValueGetter);
     areaData.hasItemOption = true;
     return areaData;

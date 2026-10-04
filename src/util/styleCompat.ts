@@ -22,6 +22,7 @@ import { ElementTextConfig } from 'zrender/src/Element';
 import { TextStyleProps, TextStylePropsPart, TextProps } from 'zrender/src/graphic/Text';
 import { each, hasOwn } from 'zrender/src/core/util';
 import { ItemStyleProps } from '../model/mixin/itemStyle';
+import tokens from '../visual/tokens';
 
 export interface LegacyStyleProps {
     legacy?: boolean
@@ -43,9 +44,9 @@ export function isEC4CompatibleStyle(
     // So we provide:
     // `legacy: true` force make compat.
     // `legacy: false`, force do not compat.
-    // `legacy` not set: auto detect wheter legacy.
+    // `legacy` not set: auto detect whether legacy.
     //     But in this case we do not compat (difficult to detect and rare case):
-    //     Becuse custom series and graphic component support "merge", users may firstly
+    //     Because custom series and graphic component support "merge", users may firstly
     //     only set `textStrokeWidth` style or secondly only set `text`.
     return style && (
         style.legacy
@@ -63,7 +64,7 @@ export function isEC4CompatibleStyle(
 /**
  * `EC4CompatibleStyle` is style that might be in echarts4 format or echarts5 format.
  * @param hostStyle The properties might be modified.
- * @return If be text el, `textContentStyle` and `textConfig` will not be retured.
+ * @return If be text el, `textContentStyle` and `textConfig` will not be returned.
  *         Otherwise a `textContentStyle` and `textConfig` will be created, whose props area
  *         retried from the `hostStyle`.
  */
@@ -85,15 +86,19 @@ export function convertFromEC4CompatibleStyle(hostStyle: ZRStyleProps, elType: s
         hasOwn(srcStyle, 'rich') && (textContentStyle.rich = srcStyle.rich);
         hasOwn(srcStyle, 'textFill') && (textContentStyle.fill = srcStyle.textFill);
         hasOwn(srcStyle, 'textStroke') && (textContentStyle.stroke = srcStyle.textStroke);
+        hasOwn(srcStyle, 'fontFamily') && (textContentStyle.fontFamily = srcStyle.fontFamily);
+        hasOwn(srcStyle, 'fontSize') && (textContentStyle.fontSize = srcStyle.fontSize);
+        hasOwn(srcStyle, 'fontStyle') && (textContentStyle.fontStyle = srcStyle.fontStyle);
+        hasOwn(srcStyle, 'fontWeight') && (textContentStyle.fontWeight = srcStyle.fontWeight);
 
         textContent = {
             type: 'text',
             style: textContentStyle,
-            // ec4 do not support rectText trigger.
-            // And when text postion is different in normal and emphasis
+            // ec4 does not support rectText trigger.
+            // And when text position is different in normal and emphasis
             // => hover text trigger emphasis;
             // => text position changed, leave mouse pointer immediately;
-            // That might cause state incorrect.
+            // That might cause incorrect state.
             silent: true
         };
         textConfig = {};
@@ -134,7 +139,7 @@ function convertEC4CompatibleRichItem(out: TextStylePropsPart, richItem: Diction
     // on a rect means `borderColor: 4` on the rect and `borderColor: 10` on an attached
     // richText in ec5.
     // (2) `out === richItem` if and only if `out` is text el or rich item.
-    // So we can overwite existing props in `out` since textXXX has higher priority.
+    // So we can overwrite existing props in `out` since textXXX has higher priority.
     richItem.font = richItem.textFont || richItem.font;
     hasOwn(richItem, 'textStrokeWidth') && (out.lineWidth = richItem.textStrokeWidth);
     hasOwn(richItem, 'textAlign') && (out.align = richItem.textAlign);
@@ -176,14 +181,14 @@ export function convertToEC4StyleForCustomSerise(
     txCfg.distance != null && (out.textDistance = txCfg.distance);
 
     const isInside = (out.textPosition as string).indexOf('inside') >= 0;
-    const hostFill = itemStl.fill || '#000';
+    const hostFill = itemStl.fill || tokens.color.neutral99;
 
     convertToEC4RichItem(out, txStl);
 
     const textFillNotSet = out.textFill == null;
     if (isInside) {
         if (textFillNotSet) {
-            out.textFill = txCfg.insideFill || '#fff';
+            out.textFill = txCfg.insideFill || tokens.color.neutral00;
             !out.textStroke && txCfg.insideStroke && (out.textStroke = txCfg.insideStroke);
             !out.textStroke && (out.textStroke = hostFill);
             out.textStrokeWidth == null && (out.textStrokeWidth = 2);
@@ -191,7 +196,7 @@ export function convertToEC4StyleForCustomSerise(
     }
     else {
         if (textFillNotSet) {
-            out.textFill = itemStl.fill || txCfg.outsideFill || '#000';
+            out.textFill = itemStl.fill || txCfg.outsideFill || tokens.color.neutral00;
         }
         !out.textStroke && txCfg.outsideStroke && (out.textStroke = txCfg.outsideStroke);
     }

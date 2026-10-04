@@ -35,14 +35,20 @@ import {
     AnimationOptionMixin,
     StatesOptionMixin,
     Dictionary,
-    CommonTooltipOption
+    CommonTooltipOption,
+    StatesMixinBase,
+    PreserveAspectMixin,
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin,
+    RoamHostModel
 } from '../../util/types';
-import { NameMap } from './geoTypes';
+import { GeoProjection, NameMap } from './geoTypes';
 import GlobalModel from '../../model/Global';
 import geoSourceManager from './geoSourceManager';
+import tokens from '../../visual/tokens';
 
 
-export interface GeoItemStyleOption extends ItemStyleOption {
+export interface GeoItemStyleOption<TCbParams = never> extends ItemStyleOption<TCbParams> {
     areaColor?: ZRColor;
 };
 interface GeoLabelOption extends LabelOption {
@@ -58,11 +64,17 @@ interface GeoLabelFormatterDataParams {
     status: DisplayState;
 }
 
-export interface RegoinOption extends GeoStateOption, StatesOptionMixin<GeoStateOption> {
+export interface RegionOption extends GeoStateOption, StatesOptionMixin<GeoStateOption, StatesMixinBase> {
     name?: string
     selected?: boolean
     tooltip?: CommonTooltipOption<GeoTooltipFormatterParams>
+    silent?: boolean
 }
+
+/**
+ * @deprecated Use `RegionOption` instead.
+ */
+export interface RegoinOption extends RegionOption {}
 
 export interface GeoTooltipFormatterParams {
     componentType: 'geo'
@@ -71,44 +83,60 @@ export interface GeoTooltipFormatterParams {
     $vars: ['name']
 }
 
-export interface GeoCommonOptionMixin extends RoamOptionMixin {
+export interface GeoCommonOptionMixin extends RoamOptionMixin, PreserveAspectMixin {
+    // When series.map use an external geo component, all of the properties should not be set.
+
     // Map name
-    map: string;
+    map?: string;
 
     // Aspect is width / height. Inited to be geoJson bbox aspect
     // This parameter is used for scale this aspect
     aspectScale?: number;
 
-    ///// Layout with center and size
-    // If you wan't to put map in a fixed size box with right aspect ratio
-    // This two properties may more conveninet
+    // Layout with center and size
+    // If you want to put map in a fixed size box with right aspect ratio
+    // This two properties may be more convenient
     // Like: `40` or `'50%'`.
     layoutCenter?: (number | string)[];
     // Like: `40` or `'50%'`.
     layoutSize?: number | string;
 
-    // Define left-top, right-bottom coords to control view
+    // Whether to clip by the viewRect (as a viewport, decided by
+    // `BoxLayoutOptionMixin` (or `layoutCenter`/`layoutSize`) and `PreserveAspectMixin`)
+    clip?: boolean
+
+    // Define left-top, right-bottom lng/lat coords to control view
     // For example, [ [180, 90], [-180, -90] ]
     // higher priority than center and zoom
     boundingCoords?: number[][];
 
     nameMap?: NameMap;
     nameProperty?: string;
+
+    /**
+     * Use raw projection by default
+     * Only available for GeoJSON source.
+     *
+     * NOTE: `center` needs to be the projected coord if projection is used.
+     */
+    projection?: GeoProjection;
 }
 
 export interface GeoOption extends
     ComponentOption,
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin,
     BoxLayoutOptionMixin,
     // For lens animation on geo.
     AnimationOptionMixin,
     GeoCommonOptionMixin,
-    StatesOptionMixin<GeoStateOption>, GeoStateOption {
+    StatesOptionMixin<GeoStateOption, StatesMixinBase>, GeoStateOption {
     mainType?: 'geo';
 
     show?: boolean;
     silent?: boolean;
 
-    regions?: RegoinOption[];
+    regions?: RegionOption[];
 
     stateAnimation?: AnimationOptionMixin
 
@@ -116,9 +144,14 @@ export interface GeoOption extends
     selectedMap?: Dictionary<boolean>
 
     tooltip?: CommonTooltipOption<GeoTooltipFormatterParams>
+
+    /**
+     * @private
+     */
+    defaultItemStyleColor?: ZRColor;
 }
 
-class GeoModel extends ComponentModel<GeoOption> {
+class GeoModel extends ComponentModel<GeoOption> implements RoamHostModel {
 
     static type = 'geo';
     readonly type = GeoModel.type;
@@ -127,11 +160,11 @@ class GeoModel extends ComponentModel<GeoOption> {
 
     static layoutMode = 'box' as const;
 
-    private _optionModelMap: zrUtil.HashMap<Model<RegoinOption>>;
+    private _optionModelMap: zrUtil.HashMap<Model<RegionOption>>;
 
     static defaultOption: GeoOption = {
 
-        zlevel: 0,
+        // zlevel: 0,
 
         z: 0,
 
@@ -146,9 +179,9 @@ class GeoModel extends ComponentModel<GeoOption> {
         // for geoJSON source: 0.75.
         aspectScale: null,
 
-        ///// Layout with center and size
-        // If you wan't to put map in a fixed size box with right aspect ratio
-        // This two properties may more conveninet
+        // /// Layout with center and size
+        // If you want to put map in a fixed size box with right aspect ratio
+        // This two properties may be more convenient
         // layoutCenter: [50%, 50%]
         // layoutSize: 100
 
@@ -172,12 +205,12 @@ class GeoModel extends ComponentModel<GeoOption> {
 
         label: {
             show: false,
-            color: '#000'
+            color: tokens.color.tertiary
         },
 
         itemStyle: {
             borderWidth: 0.5,
-            borderColor: '#444'
+            borderColor: tokens.color.border,
             // Default color:
             // + geoJSON: #eee
             // + geoSVG: null (use SVG original `fill`)
@@ -187,20 +220,20 @@ class GeoModel extends ComponentModel<GeoOption> {
         emphasis: {
             label: {
                 show: true,
-                color: 'rgb(100,0,0)'
+                color: tokens.color.primary
             },
             itemStyle: {
-                color: 'rgba(255,215,0,0.8)'
+                color: tokens.color.highlight
             }
         },
 
         select: {
             label: {
                 show: true,
-                color: 'rgb(100,0,0)'
+                color: tokens.color.primary
             },
             itemStyle: {
-                color: 'rgba(255,215,0,0.8)'
+                color: tokens.color.highlight
             }
         },
 
@@ -212,15 +245,15 @@ class GeoModel extends ComponentModel<GeoOption> {
     };
 
     init(option: GeoOption, parentModel: Model, ecModel: GlobalModel): void {
+        this.mergeDefaultAndTheme(option, ecModel);
+
         const source = geoSourceManager.getGeoResource(option.map);
         if (source && source.type === 'geoJSON') {
             const itemStyle = option.itemStyle = option.itemStyle || {};
             if (!('color' in itemStyle)) {
-                itemStyle.color = '#eee';
+                itemStyle.color = option.defaultItemStyleColor || tokens.color.backgroundTint;
             }
         }
-
-        this.mergeDefaultAndTheme(option, ecModel);
 
         // Default label emphasis `show`
         modelUtil.defaultEmphasis(option, 'label', ['show']);
@@ -253,7 +286,7 @@ class GeoModel extends ComponentModel<GeoOption> {
     /**
      * Get model of region.
      */
-    getRegionModel(name: string): Model<RegoinOption> {
+    getRegionModel(name: string): Model<RegionOption> {
         return this._optionModelMap.get(name) || new Model(null, this, this.ecModel);
     }
 
@@ -269,21 +302,13 @@ class GeoModel extends ComponentModel<GeoOption> {
         const params = {
             name: name
         } as GeoLabelFormatterDataParams;
-        if (typeof formatter === 'function') {
+        if (zrUtil.isFunction(formatter)) {
             params.status = status;
             return formatter(params);
         }
-        else if (typeof formatter === 'string') {
+        else if (zrUtil.isString(formatter)) {
             return formatter.replace('{a}', name != null ? name : '');
         }
-    }
-
-    setZoom(zoom: number): void {
-        this.option.zoom = zoom;
-    }
-
-    setCenter(center: number[]): void {
-        this.option.center = center;
     }
 
     // PENGING If selectedMode is null ?
@@ -315,6 +340,10 @@ class GeoModel extends ComponentModel<GeoOption> {
     isSelected(name?: string): boolean {
         const selectedMap = this.option.selectedMap;
         return !!(selectedMap && selectedMap[name]);
+    }
+
+    __ownRoamView() {
+        return this.coordinateSystem.view;
     }
 
 }

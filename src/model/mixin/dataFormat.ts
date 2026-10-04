@@ -35,7 +35,7 @@ import {
 } from '../../util/types';
 import GlobalModel from '../Global';
 import { TooltipMarkupBlockFragment } from '../../component/tooltip/tooltipMarkup';
-import { makePrintable } from '../../util/log';
+import { error, makePrintable } from '../../util/log';
 
 const DIMENSION_LABEL_REG = /\{@(.+?)\}/g;
 
@@ -70,7 +70,7 @@ export class DataFormatMixin {
         const borderColor = style && style.stroke as ColorString;
         const mainType = this.mainType;
         const isSeries = mainType === 'series';
-        const userOutput = data.userOutput;
+        const userOutput = data.userOutput && data.userOutput.get();
 
         return {
             componentType: mainType,
@@ -87,7 +87,7 @@ export class DataFormatMixin {
             value: rawValue,
             color: color,
             borderColor: borderColor,
-            dimensionNames: userOutput ? userOutput.dimensionNames : null,
+            dimensionNames: userOutput ? userOutput.fullDimensions : null,
             encode: userOutput ? userOutput.encode : null,
 
             // Param name list for mapping `a`, `b`, `c`, `d`, `e`
@@ -137,28 +137,35 @@ export class DataFormatMixin {
             );
         }
 
-        if (typeof formatter === 'function') {
+        if (zrUtil.isFunction(formatter)) {
             params.status = status;
             params.dimensionIndex = labelDimIndex;
             return formatter(params);
         }
-        else if (typeof formatter === 'string') {
+        else if (zrUtil.isString(formatter)) {
             const str = formatTpl(formatter, params);
 
             // Support 'aaa{@[3]}bbb{@product}ccc'.
             // Do not support '}' in dim name util have to.
             return str.replace(DIMENSION_LABEL_REG, function (origin, dimStr: string) {
                 const len = dimStr.length;
-                const dimLoose: DimensionLoose = (dimStr.charAt(0) === '[' && dimStr.charAt(len - 1) === ']')
-                    ? +dimStr.slice(1, len - 1) // Also support: '[]' => 0
-                    : dimStr;
+
+                let dimLoose: DimensionLoose = dimStr;
+                if (dimLoose.charAt(0) === '[' && dimLoose.charAt(len - 1) === ']') {
+                    dimLoose = +dimLoose.slice(1, len - 1); // Also support: '[]' => 0
+                    if (__DEV__) {
+                        if (isNaN(dimLoose)) {
+                            error(`Invalide label formatter: @${dimStr}, only support @[0], @[1], @[2], ...`);
+                        }
+                    }
+                }
 
                 let val = retrieveRawValue(data, dataIndex, dimLoose) as OptionDataValue;
 
                 if (extendParams && zrUtil.isArray(extendParams.interpolatedValue)) {
-                    const dimInfo = data.getDimensionInfo(dimLoose);
-                    if (dimInfo) {
-                        val = extendParams.interpolatedValue[dimInfo.index];
+                    const dimIndex = data.getDimensionIndex(dimLoose);
+                    if (dimIndex >= 0) {
+                        val = extendParams.interpolatedValue[dimIndex];
                     }
                 }
 
@@ -204,8 +211,8 @@ type TooltipFormatResult =
 // compat it?
 // type TooltipFormatResultLegacyObject = {
 //     // `html` means the markup language text, either in 'html' or 'richText'.
-//     // The name `html` is not appropriate becuase in 'richText' it is not a HTML
-//     // string. But still support it for backward compat.
+//     // The name `html` is not appropriate because in 'richText' it is not a HTML
+//     // string. But still support it for backward compatibility.
 //     html: string;
 //     markers: Dictionary<ColorString>;
 // };
@@ -213,14 +220,11 @@ type TooltipFormatResult =
 /**
  * For backward compat, normalize the return from `formatTooltip`.
  */
-export function normalizeTooltipFormatResult(
-    result: TooltipFormatResult
-    // markersExisting: Dictionary<ColorString>
-): {
+export function normalizeTooltipFormatResult(result: TooltipFormatResult): {
     // If `markupFragment` exists, `markupText` should be ignored.
-    markupFragment: TooltipMarkupBlockFragment;
+    frag: TooltipMarkupBlockFragment;
     // Can be `null`/`undefined`, means no tooltip.
-    markupText: string;
+    text: string;
     // Merged with `markersExisting`.
     // markers: Dictionary<ColorString>;
 } {
@@ -249,8 +253,8 @@ export function normalizeTooltipFormatResult(
     }
 
     return {
-        markupText: markupText,
+        text: markupText,
         // markers: markers || markersExisting,
-        markupFragment: markupFragment
+        frag: markupFragment
     };
 }

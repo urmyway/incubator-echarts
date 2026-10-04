@@ -17,10 +17,9 @@
 * under the License.
 */
 
-import {updateCenterAndZoom, RoamPaylod} from '../../action/roamHelper';
-import { Payload } from '../../util/types';
-import TreeSeriesModel from './TreeSeries';
-import GlobalModel from '../../model/Global';
+import {registerRoamActionSimply} from '../../component/helper/roamHelper';
+import { COMPONENT_MAIN_TYPE_SERIES, Payload } from '../../util/types';
+import TreeSeriesModel, { SERIES_TYPE_TREE } from './TreeSeries';
 import { EChartsExtensionInstallRegisters } from '../../extension';
 
 export interface TreeExpandAndCollapsePayload extends Payload {
@@ -34,7 +33,7 @@ export function installTreeAction(registers: EChartsExtensionInstallRegisters) {
         update: 'update'
     }, function (payload: TreeExpandAndCollapsePayload, ecModel) {
         ecModel.eachComponent({
-            mainType: 'series', subType: 'tree', query: payload
+            mainType: COMPONENT_MAIN_TYPE_SERIES, subType: SERIES_TYPE_TREE, query: payload
         }, function (seriesModel: TreeSeriesModel) {
             const dataIndex = payload.dataIndex;
             const tree = seriesModel.getData().tree;
@@ -43,27 +42,6 @@ export function installTreeAction(registers: EChartsExtensionInstallRegisters) {
         });
     });
 
-    registers.registerAction({
-        type: 'treeRoam',
-        event: 'treeRoam',
-        // Here we set 'none' instead of 'update', because roam action
-        // just need to update the transform matrix without having to recalculate
-        // the layout. So don't need to go through the whole update process, such
-        // as 'dataPrcocess', 'coordSystemUpdate', 'layout' and so on.
-        update: 'none'
-    }, function (payload: RoamPaylod, ecModel: GlobalModel) {
-        ecModel.eachComponent({
-            mainType: 'series', subType: 'tree', query: payload
-        }, function (seriesModel: TreeSeriesModel) {
-            const coordSys = seriesModel.coordinateSystem;
-            const res = updateCenterAndZoom(coordSys, payload);
-
-            seriesModel.setCenter
-                && seriesModel.setCenter(res.center);
-
-            seriesModel.setZoom
-                && seriesModel.setZoom(res.zoom);
-        });
-    });
+    registerRoamActionSimply(registers, COMPONENT_MAIN_TYPE_SERIES, SERIES_TYPE_TREE);
 
 }

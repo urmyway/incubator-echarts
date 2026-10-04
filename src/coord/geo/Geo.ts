@@ -18,15 +18,23 @@
 */
 
 import * as zrUtil from 'zrender/src/core/util';
-import BoundingRect from 'zrender/src/core/BoundingRect';
-import View from '../View';
+import View, {
+    useLegacyViewCoordSysCenterBase, viewCoordSysCopyViewRect, viewCoordSysSetBoundingRect
+} from '../View';
 import geoSourceManager from './geoSourceManager';
 import { GeoJSONRegion, Region } from './Region';
-import { GeoResource, NameMap } from './geoTypes';
+import { GeoProjection, GeoResource, NameMap } from './geoTypes';
 import GlobalModel from '../../model/Global';
 import { ParsedModelFinder, ParsedModelFinderKnown, SINGLE_REFERRING } from '../../util/model';
-import GeoModel from './GeoModel';
+import type GeoModel from './GeoModel';
 import { resizeGeoType } from './geoCreator';
+import { warn } from '../../util/log';
+import type ExtensionAPI from '../../core/ExtensionAPI';
+import { CoordinateSystemMaster, GeoLikeCoordSys } from '../CoordinateSystem';
+import BoundingRect from 'zrender/src/core/BoundingRect';
+import Transformable from 'zrender/src/core/Transformable';
+import { MatrixArray } from 'zrender/src/core/matrix';
+import { NullUndefined } from 'zrender/src/core/types';
 
 const GEO_DEFAULT_PARAMS: {
     [type in GeoResource['type']]: {
@@ -44,10 +52,14 @@ const GEO_DEFAULT_PARAMS: {
     }
 } as const;
 
+export const geo2DDimensions: ['lng', 'lat'] = ['lng', 'lat'];
 
-class Geo extends View {
 
-    dimensions = ['lng', 'lat'];
+class Geo
+    extends Transformable // See VIEW_COORD_SYS_TRANS_OVERALL_BACKWARD_COMPATIBILITY
+    implements CoordinateSystemMaster, GeoLikeCoordSys {
+
+    dimensions: ['lng', 'lat'] = geo2DDimensions;
 
     type = 'geo';
 
@@ -55,88 +67,102 @@ class Geo extends View {
     readonly map: string;
     readonly resourceType: GeoResource['type'];
 
+    readonly view: View;
+    readonly name: string;
+
     // Only store specified name coord via `addGeoCoord`.
     private _nameCoordMap: zrUtil.HashMap<number[]> = zrUtil.createHashMap<number[], string>();
     private _regionsMap: zrUtil.HashMap<Region>;
-    private _invertLongitute: boolean;
+    private _clip: boolean;
     readonly regions: Region[];
     readonly aspectScale: number;
 
+
+    projection: GeoProjection;
     // Injected outside
-    model: GeoModel;
+    model: GeoModel | NullUndefined;
     resize: resizeGeoType;
 
     constructor(
         name: string,
         map: string,
         opt: {
+            projection?: GeoProjection;
             // Specify name alias
             nameMap?: NameMap;
             nameProperty?: string;
             aspectScale?: number;
+            api: ExtensionAPI;
+            ecModel: GlobalModel;
+            clip?: boolean;
         }
     ) {
-        super(name);
+        super();
 
-        this.map = map;
-
-        const source = geoSourceManager.load(map, opt.nameMap, opt.nameProperty);
+        this.name = name;
+        let projection = opt.projection;
+        const source = geoSourceManager.load(
+            map,
+            opt.nameMap,
+            opt.nameProperty
+        );
         const resource = geoSourceManager.getGeoResource(map);
-        this.resourceType = resource ? resource.type : null;
+        const resourceType = this.resourceType = resource ? resource.type : null;
+        const regions = this.regions = source.regions;
+        const defaultParams = GEO_DEFAULT_PARAMS[resource.type];
+        this._clip = opt.clip;
 
-        const defaultParmas = GEO_DEFAULT_PARAMS[resource.type];
+        // Not invert longitude if projection exits.
+        const invertLongitute = projection ? false : defaultParams.invertLongitute;
 
-        this._regionsMap = source.regionsMap;
-        this._invertLongitute = defaultParmas.invertLongitute;
-        this.regions = source.regions;
-        this.aspectScale = zrUtil.retrieve2(opt.aspectScale, defaultParmas.aspectScale);
-
-        const boundingRect = source.boundingRect;
-        this.setBoundingRect(boundingRect.x, boundingRect.y, boundingRect.width, boundingRect.height);
-    }
-
-    /**
-     * Whether contain the given [lng, lat] coord.
-     */
-    // Never used yet.
-    // containCoord(coord: number[]) {
-    //     const regions = this.regions;
-    //     for (let i = 0; i < regions.length; i++) {
-    //         const region = regions[i];
-    //         if (region.type === 'geoJSON' && (region as GeoJSONRegion).contain(coord)) {
-    //             return true;
-    //         }
-    //     }
-    //     return false;
-    // }
-
-    protected _transformTo(x: number, y: number, width: number, height: number): void {
-        let rect = this.getBoundingRect();
-        const invertLongitute = this._invertLongitute;
-
-        rect = rect.clone();
-
-        if (invertLongitute) {
-            // Longitute is inverted
-            rect.y = -rect.y - rect.height;
-        }
-
-        const rawTransformable = this._rawTransformable;
-
-        rawTransformable.transform = rect.calculateTransform(
-            new BoundingRect(x, y, width, height)
+        this.view = new View(
+            invertLongitute,
+            useLegacyViewCoordSysCenterBase(opt.ecModel, opt.api),
+            this
         );
 
-        const rawParent = rawTransformable.parent;
-        rawTransformable.parent = null;
-        rawTransformable.decomposeTransform();
-        rawTransformable.parent = rawParent;
+        this.map = map;
+        this._regionsMap = source.regionsMap;
+        this.regions = source.regions;
 
-        if (invertLongitute) {
-            rawTransformable.scaleY = -rawTransformable.scaleY;
+        if (__DEV__ && projection) {
+            // Do some check
+            if (resourceType === 'geoSVG') {
+                if (__DEV__) {
+                    warn(`Map ${map} with SVG source can't use projection. Only GeoJSON source supports projection.`);
+                }
+                projection = null;
+            }
+            if (!(projection.project && projection.unproject)) {
+                if (__DEV__) {
+                    warn('project and unproject must be both provided in the projeciton.');
+                }
+                projection = null;
+            }
         }
+        this.projection = projection;
 
-        this._updateTransform();
+        let boundingRect;
+        if (projection) {
+            // Can't reuse the raw bounding rect
+            for (let i = 0; i < regions.length; i++) {
+                const regionRect = (regions[i] as GeoJSONRegion).getBoundingRect(projection);
+                boundingRect = boundingRect || regionRect.clone();
+                boundingRect.union(regionRect);
+            }
+        }
+        else {
+            boundingRect = source.boundingRect;
+        }
+        viewCoordSysSetBoundingRect(
+            this.view, boundingRect.x, boundingRect.y, boundingRect.width, boundingRect.height
+        );
+
+        // aspectScale and invertLongitute actually is the parameters default raw projection.
+        // So we ignore them if projection is given.
+
+        // Ignore default aspect scale if projection exits.
+        this.aspectScale = projection ? 1 : zrUtil.retrieve2(opt.aspectScale, defaultParams.aspectScale);
     }
 
     getRegion(name: string): Region {
@@ -165,33 +191,90 @@ class Geo extends View {
      */
     getGeoCoord(name: string): number[] {
         const region = this._regionsMap.get(name);
-        // calcualte center only on demand.
+        // Calculate center only on demand.
         return this._nameCoordMap.get(name) || (region && region.getCenter());
     }
 
     dataToPoint(data: number[] | string, noRoam?: boolean, out?: number[]): number[] {
-        if (typeof data === 'string') {
+        if (zrUtil.isString(data)) {
             // Map area name to geoCoord
             data = this.getGeoCoord(data);
         }
         if (data) {
-            return View.prototype.dataToPoint.call(this, data, noRoam, out);
+            const projection = this.projection;
+            if (projection) {
+                // projection may return null point.
+                data = projection.project(data);
+            }
+            return data && this.view.dataToPoint(data, noRoam, out);
         }
     }
 
-    convertToPixel(ecModel: GlobalModel, finder: ParsedModelFinder, value: number[]): number[] {
+    pointToData(point: number[], reserved?: unknown, out?: number[]) {
+        const projection = this.projection;
+        if (projection) {
+            // projection may return null point.
+            point = projection.unproject(point);
+        }
+        // FIXME: if no `point`, should return [NaN, NaN], rather than undefined.
+        //  null/undefined has special meaning in `convertFromPixel`.
+        return point && this.view.pointToData(point, out);
+    }
+
+    convertToPixel(
+        ecModel: GlobalModel, finder: ParsedModelFinder, value: number[]
+    ): number[] {
         const coordSys = getCoordSys(finder);
         return coordSys === this ? coordSys.dataToPoint(value) : null;
     }
 
-    convertFromPixel(ecModel: GlobalModel, finder: ParsedModelFinder, pixel: number[]): number[] {
+    convertFromPixel(
+        ecModel: GlobalModel, finder: ParsedModelFinder, pixel: number[]
+    ): number[] {
         const coordSys = getCoordSys(finder);
         return coordSys === this ? coordSys.pointToData(pixel) : null;
     }
 
-};
+    containPoint(point: number[]): boolean {
+        return this.view.containPoint(point);
+    }
 
-zrUtil.mixin(Geo, View);
+    getArea(tolerance?: number): BoundingRect {
+        tolerance = tolerance || 0;
+        const rect = viewCoordSysCopyViewRect(null, this.view);
+        rect.x -= tolerance;
+        rect.y -= tolerance;
+        rect.width += 2 * tolerance;
+        rect.height += 2 * tolerance;
+        return rect;
+    }
+
+    shouldClip(): boolean {
+        return this._clip;
+    }
+
+    /**
+     * @implements CoordinateSystem['getBoundingRect']
+     */
+    getBoundingRect(): BoundingRect {
+        return this.view.getBoundingRect();
+    }
+
+    /**
+     * @implements CoordinateSystem['getViewRect']
+     */
+    getViewRect(): BoundingRect {
+        return this.view.getViewRect();
+    }
+
+    /**
+     * @implements CoordinateSystem['getRoamTransform']
+     */
+    getRoamTransform(): MatrixArray {
+        return this.view.getRoamTransform();
+    }
+
+};
 
 function getCoordSys(finder: ParsedModelFinderKnown): Geo {
     const geoModel = finder.geoModel as GeoModel;

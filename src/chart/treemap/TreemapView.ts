@@ -42,7 +42,7 @@ import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
 import Model from '../../model/Model';
 import { LayoutRect } from '../../util/layout';
-import { TreemapLayoutNode } from './treemapLayout';
+import { calculateCurrentZoom, treemapClampZoom, TreemapLayoutNode } from './treemapLayout';
 import Element from 'zrender/src/Element';
 import Displayable from 'zrender/src/graphic/Displayable';
 import { makeInner, convertOptionIdName } from '../../util/model';
@@ -173,7 +173,6 @@ class TreemapView extends ChartView {
         api: ExtensionAPI,
         payload: TreemapZoomToNodePayload | TreemapRenderPayload | TreemapMovePayload | TreemapRootToNodePayload
     ) {
-
         const models = ecModel.findComponents({
             mainType: 'series', subType: 'treemap', query: payload
         });
@@ -202,10 +201,11 @@ class TreemapView extends ChartView {
             : null;
 
         const containerGroup = this._giveContainerGroup(layoutInfo);
+        const hasAnimation = seriesModel.get('animation');
 
         const renderResult = this._doRender(containerGroup, seriesModel, reRoot);
         (
-            !isInit && (
+            hasAnimation && !isInit && (
                 !payloadType
                 || payloadType === 'treemapZoomToNode'
                 || payloadType === 'treemapRootToNode'
@@ -253,9 +253,9 @@ class TreemapView extends ChartView {
             );
         }
 
-        // Notice: when thisTree and oldTree are the same tree (see list.cloneShallow),
-        // the oldTree is actually losted, so we can not find all of the old graphic
-        // elements from tree. So we use this stragegy: make element storage, move
+        // Notice: When thisTree and oldTree are the same tree (see list.cloneShallow),
+        // the oldTree is actually losted, so we cannot find all of the old graphic
+        // elements from tree. So we use this strategy: make element storage, move
         // from old storage to new storage, clear old storage.
 
         dualTravel(
@@ -357,10 +357,6 @@ class TreemapView extends ChartView {
         seriesModel: TreemapSeriesModel,
         reRoot: ReRoot
     ) {
-        if (!seriesModel.get('animation')) {
-            return;
-        }
-
         const durationOption = seriesModel.get('animationDurationUpdate');
         const easingOption = seriesModel.get('animationEasing');
         // TODO: do not support function until necessary.
@@ -473,20 +469,33 @@ class TreemapView extends ChartView {
     }
 
     private _resetController(api: ExtensionAPI) {
-        let controller = this._controller;
+        const seriesModel = this.seriesModel;
 
+        let controller = this._controller;
         // Init controller.
         if (!controller) {
             controller = this._controller = new RoamController(api.getZr());
-            controller.enable(this.seriesModel.get('roam'));
             controller.on('pan', bind(this._onPan, this));
             controller.on('zoom', bind(this._onZoom, this));
         }
 
-        const rect = new BoundingRect(0, 0, api.getWidth(), api.getHeight());
-        controller.setPointerChecker(function (e, x, y) {
-            return rect.contain(x, y);
+        controller.enable(seriesModel.get('roam'), {
+            api,
+            zInfo: {component: seriesModel},
+            triggerInfo: {
+                roamTrigger: seriesModel.get('roamTrigger'),
+                isInSelf: (e, x, y) => {
+                    const containerGroup = this._containerGroup;
+                    return containerGroup
+                        // Currently only x, y exist in tranform.
+                        ? containerGroup.getBoundingRect().contain(x - containerGroup.x, y - containerGroup.y)
+                        : false;
+                },
+                // isInClip: (e, x, y) => {
+                // }
+            },
         });
+
     }
 
     private _clearController() {
@@ -529,10 +538,12 @@ class TreemapView extends ChartView {
     private _onZoom(e: RoamEventParams['zoom']) {
         let mouseX = e.originX;
         let mouseY = e.originY;
+        const zoomDelta = e.scale;
+        const seriesModel = this.seriesModel;
 
         if (this._state !== 'animating') {
             // These param must not be cached.
-            const root = this.seriesModel.getData().tree.root;
+            const root = seriesModel.getData().tree.root;
 
             if (!root) {
                 return;
@@ -547,7 +558,13 @@ class TreemapView extends ChartView {
             const rect = new BoundingRect(
                 rootLayout.x, rootLayout.y, rootLayout.width, rootLayout.height
             );
-            const layoutInfo = this.seriesModel.layoutInfo;
+
+            const layoutInfo = seriesModel.layoutInfo;
+            const currZoom = calculateCurrentZoom(layoutInfo, rootLayout);
+            let newZoom = currZoom * zoomDelta;
+
+            newZoom = treemapClampZoom(newZoom, seriesModel);
+            const zoomScale = newZoom / currZoom;
 
             // Transform mouse coord from global to containerGroup.
             mouseX -= layoutInfo.x;
@@ -556,7 +573,7 @@ class TreemapView extends ChartView {
             // Scale root bounding rect.
             const m = matrix.create();
             matrix.translate(m, m, [-mouseX, -mouseY]);
-            matrix.scale(m, m, [e.scale, e.scale]);
+            matrix.scale(m, m, [zoomScale, zoomScale]);
             matrix.translate(m, m, [mouseX, mouseY]);
 
             rect.applyTransform(m);
@@ -668,13 +685,12 @@ class TreemapView extends ChartView {
     }
 
     /**
-     * @public
-     * @param {number} x Global coord x.
-     * @param {number} y Global coord y.
-     * @return {Object} info If not found, return undefined;
-     * @return {number} info.node Target node.
-     * @return {number} info.offsetX x refer to target node.
-     * @return {number} info.offsetY y refer to target node.
+     * @param x Global coord x.
+     * @param y Global coord y.
+     * @return info If not found, return undefined;
+     * @return info.node Target node.
+     * @return info.offsetX x refer to target node.
+     * @return info.offsetY y refer to target node.
      */
     findTarget(x: number, y: number): FoundTargetInfo {
         let targetInfo;
@@ -687,7 +703,7 @@ class TreemapView extends ChartView {
                 const point = bgEl.transformCoordToLocal(x, y);
                 const shape = bgEl.shape;
 
-                // For performance consideration, dont use 'getBoundingRect'.
+                // For performance consideration, don't use 'getBoundingRect'.
                 if (shape.x <= point[0]
                     && point[0] <= shape.x + shape.width
                     && shape.y <= point[1]
@@ -709,9 +725,6 @@ class TreemapView extends ChartView {
     }
 }
 
-/**
- * @inner
- */
 function createStorage(): RenderElementStorage | LastCfgStorage {
     return {
         nodeGroup: [],
@@ -721,7 +734,6 @@ function createStorage(): RenderElementStorage | LastCfgStorage {
 }
 
 /**
- * @inner
  * @return Return undefined means do not travel further.
  */
 function renderNode(
@@ -802,8 +814,10 @@ function renderNode(
     const bg = giveGraphic('background', Rect, depth, Z2_BG);
     bg && renderBackground(group, bg, isParent && thisLayout.upperLabelHeight);
 
-    const focus = nodeModel.get(['emphasis', 'focus']);
-    const blurScope = nodeModel.get(['emphasis', 'blurScope']);
+    const emphasisModel = nodeModel.getModel('emphasis');
+    const focus = emphasisModel.get('focus');
+    const blurScope = emphasisModel.get('blurScope');
+    const isDisabled = emphasisModel.get('disabled');
 
     const focusOrIndices =
         focus === 'ancestor' ? thisNode.getAncestorsIndices()
@@ -819,7 +833,7 @@ function renderNode(
             setAsHighDownDispatcher(group, false);
         }
         if (bg) {
-            setAsHighDownDispatcher(bg, true);
+            setAsHighDownDispatcher(bg, !isDisabled);
             // Only for enabling highlight/downplay.
             data.setItemGraphicEl(thisNode.dataIndex, bg);
 
@@ -830,12 +844,17 @@ function renderNode(
         const content = giveGraphic('content', Rect, depth, Z2_CONTENT);
         content && renderContent(group, content);
 
+        (bg as ECElement).disableMorphing = true;
+
         if (bg && isHighDownDispatcher(bg)) {
             setAsHighDownDispatcher(bg, false);
         }
-        setAsHighDownDispatcher(group, true);
+        setAsHighDownDispatcher(group, !isDisabled);
         // Only for enabling highlight/downplay.
         data.setItemGraphicEl(thisNode.dataIndex, group);
+
+        const cursorStyle = nodeModel.getShallow('cursor');
+        cursorStyle && content.attr('cursor', cursorStyle);
 
         enableHoverFocus(group, focusOrIndices, blurScope);
     }
@@ -980,6 +999,9 @@ function renderNode(
         );
 
         const textEl = rectEl.getTextContent();
+        if (!textEl) {
+            return;
+        }
         const textStyle = textEl.style;
         const textPadding = normalizeCssArray(textStyle.padding || 0);
 
@@ -1094,9 +1116,9 @@ function renderNode(
 
 }
 
-// We can not set all backgroud with the same z, Because the behaviour of
+// We cannot set all background with the same z, because the behaviour of
 // drill down and roll up differ background creation sequence from tree
-// hierarchy sequence, which cause that lowser background element overlap
+// hierarchy sequence, which cause lower background elements to overlap
 // upper ones. So we calculate z based on depth.
 // Moreover, we try to shrink down z interval to [0, 1] to avoid that
 // treemap with large z overlaps other components.

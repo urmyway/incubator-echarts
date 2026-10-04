@@ -31,9 +31,13 @@ import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
 import CanvasPainter from 'zrender/src/canvas/Painter';
 import { StageHandlerProgressParams, StageHandlerProgressExecutor } from '../../util/types';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import type Polar from '../../coord/polar/Polar';
 import type Cartesian2D from '../../coord/cartesian/Cartesian2D';
+import Element from 'zrender/src/Element';
+import { getIncrementalId } from '../../util/model';
+import { getCurrentCanvasPainter } from '../../util/graphic';
+import { ILineDraw } from '../helper/baseDraw';
 
 class LinesView extends ChartView {
 
@@ -43,7 +47,7 @@ class LinesView extends ChartView {
     private _lastZlevel: number;
     private _finished: boolean;
 
-    private _lineDraw: LineDraw | LargeLineDraw;
+    private _lineDraw: ILineDraw;
 
     private _hasEffet: boolean;
     private _isPolyline: boolean;
@@ -61,36 +65,29 @@ class LinesView extends ChartView {
         // Avoid the drag cause ghost shadow
         // FIXME Better way ?
         // SVG doesn't support
-        const isSvg = zr.painter.getType() === 'svg';
-        if (!isSvg) {
+        const isCanvas = !!getCurrentCanvasPainter(api);
+        if (isCanvas) {
             (zr.painter as CanvasPainter).getLayer(zlevel).clear(true);
         }
         // Config layer with motion blur
-        if (this._lastZlevel != null && !isSvg) {
+        if (this._lastZlevel != null && isCanvas) {
             zr.configLayer(this._lastZlevel, {
                 motionBlur: false
             });
         }
-        if (this._showEffect(seriesModel) && trailLength) {
-            if (__DEV__) {
-                let notInIndividual = false;
-                ecModel.eachSeries(function (otherSeriesModel) {
-                    if (otherSeriesModel !== seriesModel && otherSeriesModel.get('zlevel') === zlevel) {
-                        notInIndividual = true;
-                    }
-                });
-                notInIndividual && console.warn('Lines with trail effect should have an individual zlevel');
-            }
-
-            if (!isSvg) {
+        if (this._showEffect(seriesModel) && trailLength > 0) {
+            if (isCanvas) {
                 zr.configLayer(zlevel, {
                     motionBlur: true,
                     lastFrameAlpha: Math.max(Math.min(trailLength / 10 + 0.9, 1), 0)
                 });
             }
+            else if (__DEV__) {
+                console.warn('SVG render mode doesn\'t support lines with trail effect');
+            }
         }
 
-        lineDraw.updateData(data as List);
+        lineDraw.updateData(data as SeriesData);
 
         const clipPath = seriesModel.get('clip', true) && createClipPath(
             (seriesModel.coordinateSystem as Polar | Cartesian2D), false, seriesModel
@@ -112,7 +109,7 @@ class LinesView extends ChartView {
 
         const lineDraw = this._updateLineDraw(data, seriesModel);
 
-        lineDraw.incrementalPrepareUpdate(data);
+        lineDraw.incrementalPrepareUpdate(data as any);
 
         this._clearLayer(api);
 
@@ -124,20 +121,25 @@ class LinesView extends ChartView {
         seriesModel: LinesSeriesModel,
         ecModel: GlobalModel
     ) {
-        this._lineDraw.incrementalUpdate(taskParams, seriesModel.getData());
+        this._lineDraw.incrementalUpdate(taskParams, seriesModel.getData() as any, getIncrementalId(seriesModel));
 
         this._finished = taskParams.end === seriesModel.getData().count();
     }
 
+    eachRendered(cb: (el: Element) => boolean | void) {
+        this._lineDraw && this._lineDraw.eachRendered(cb);
+    }
+
     updateTransform(seriesModel: LinesSeriesModel, ecModel: GlobalModel, api: ExtensionAPI) {
         const data = seriesModel.getData();
-        const pipelineContext = seriesModel.pipelineContext;
+        const lineDraw = this._lineDraw;
 
-        if (!this._finished || pipelineContext.large || pipelineContext.progressiveRender) {
+        if (!this._finished
+            || !lineDraw
             // TODO Don't have to do update in large mode. Only do it when there are millions of data.
-            return {
-                update: true
-            } as const;
+            || !lineDraw.updateLayout
+        ) {
+            return {update: true} as const;
         }
         else {
             // TODO Use same logic with ScatterView.
@@ -150,13 +152,12 @@ class LinesView extends ChartView {
                     count: data.count()
                 }, data);
             }
-            // Not in large mode
-            (this._lineDraw as LineDraw).updateLayout();
+            lineDraw.updateLayout();
             this._clearLayer(api);
         }
     }
 
-    _updateLineDraw(data: List, seriesModel: LinesSeriesModel) {
+    _updateLineDraw(data: SeriesData, seriesModel: LinesSeriesModel) {
         let lineDraw = this._lineDraw;
         const hasEffect = this._showEffect(seriesModel);
         const isPolyline = !!seriesModel.get('polyline');
@@ -186,7 +187,6 @@ class LinesView extends ChartView {
             this._hasEffet = hasEffect;
             this._isPolyline = isPolyline;
             this._isLargeDraw = isLargeDraw;
-            this.group.removeAll();
         }
 
         this.group.add(lineDraw.group);
@@ -200,10 +200,9 @@ class LinesView extends ChartView {
 
     _clearLayer(api: ExtensionAPI) {
         // Not use motion when dragging or zooming
-        const zr = api.getZr();
-        const isSvg = zr.painter.getType() === 'svg';
-        if (!isSvg && this._lastZlevel != null) {
-            (zr.painter as CanvasPainter).getLayer(this._lastZlevel).clear(true);
+        const painter = getCurrentCanvasPainter(api);
+        if (painter && this._lastZlevel != null) {
+            painter.getLayer(this._lastZlevel).clear(true);
         }
     }
 
@@ -212,6 +211,10 @@ class LinesView extends ChartView {
         this._lineDraw = null;
         // Clear motion when lineDraw is removed
         this._clearLayer(api);
+    }
+
+    dispose(ecModel: GlobalModel, api: ExtensionAPI) {
+        this.remove(ecModel, api);
     }
 
 }

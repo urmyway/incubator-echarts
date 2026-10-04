@@ -43,6 +43,22 @@ under the License.
             }
         </style>
 
+        <div class="chart" id="scatter-clip-cartesian"></div>
+        <div class="chart" id="large-scatter-clip"></div>
+        <div class="chart" id="scatter-clip-polar"></div>
+        <div class="chart" id="line-dataZoom-time"></div>
+        <div class="chart" id="line-dataZoom-category"></div>
+        <div class="chart" id="bar-clip"></div>
+        <div class="chart" id="bar-large-clip"></div>
+        <div class="chart" id="lines-clip"></div>
+        <div class="chart" id="custom-clip"></div>
+        <div class="chart" id="candlestick-clip"></div>
+        <div class="chart" id="candlestick-large-clip"></div>
+        <div class="chart" id="line-highlight-point"></div>
+        <div class="chart" id="line-clip"></div>
+        <div class="chart" id="polar-clip"></div>
+
+
         <script>
             function makeToggleChartButtons(toggleClip) {
                 return  [{
@@ -59,7 +75,7 @@ under the License.
             }
         </script>
 
-        <div class="chart" id="scatter-clip-cartesian"></div>
+
         <script>
             require([
                 'echarts'
@@ -104,8 +120,6 @@ under the License.
         </script>
 
 
-
-        <div class="chart" id="scatter-clip-polar"></div>
         <script>
             require([
                 'echarts'
@@ -115,6 +129,19 @@ under the License.
                 for (var i = 0; i < 100; i++) {
                     data1.push([Math.random() * 10, Math.random() * 360]);
                 }
+
+                data1.push({
+                    value: [5, 82],
+                    name: 'Shrink the page, this poi👆nt shouldn\'t be clipped',
+                    itemStyle: {
+                        color: 'red'
+                    },
+                    label: {
+                        show: true,
+                        formatter: '{b}',
+                        position: 'bottom'
+                    }
+                });
 
                 var option = {
                     polar: {},
@@ -153,9 +180,6 @@ under the License.
 
 
 
-
-
-        <div class="chart" id="large-scatter-clip"></div>
         <script>
             require([
                 'echarts'
@@ -235,7 +259,7 @@ under the License.
 
 
 
-        <div class="chart" id="lines-clip"></div>
+
         <script>
             require([
                 'echarts'
@@ -296,21 +320,27 @@ under the License.
                         type:'value',
                         min: -1000,
                         max: 1000,
+                        // axisLine: {
+                        //     onZero: true
+                        // },
                         splitLine:{
-                    　　　　lineStyle: {
-                    　　　　    width: 1
-                    　　　　}
-                    　　}
+                            lineStyle: {
+                                width: 1
+                            },
+                        }
                     },
                     yAxis: {
                         type:'value',
                         min: -1000,
                         max: 1000,
+                        // axisLine: {
+                        //     onZero: true
+                        // },
                         splitLine:{
-                    　　　　lineStyle: {
-                    　　　　    width: 1
-                    　　　　}
-                    　　}
+                            lineStyle: {
+                                width: 1
+                            },
+                        }
                     },
                     dataZoom: [{
                             type: 'inside',
@@ -364,7 +394,6 @@ under the License.
 
 
 
-        <div class="chart" id="line-dataZoom-time"></div>
         <script>
             require([
                 'echarts'
@@ -532,7 +561,6 @@ under the License.
 
 
 
-        <div class="chart" id="line-dataZoom-category"></div>
         <script>
             require([
                 'echarts'
@@ -644,7 +672,6 @@ under the License.
         </script>
 
 
-        <div class="chart" id="bar-clip"></div>
         <script>
 
             require([
@@ -767,7 +794,6 @@ under the License.
         </script>
 
 
-        <div class="chart" id="bar-large-clip"></div>
         <script>
             require([
                 'echarts'/*, 'map/js/china' */
@@ -875,7 +901,7 @@ under the License.
             });
         </script>
 
-        <div class="chart" id="custom-clip"></div>
+
         <script>
             require([
                 'echarts'
@@ -956,7 +982,6 @@ under the License.
         </script>
 
 
-        <div class="chart" id="candlestick-clip"></div>
         <script>
             require([
                 'echarts'
@@ -1206,7 +1231,6 @@ under the License.
         </script>
 
 
-        <div class="chart" id="candlestick-large-clip"></div>
         <script>
             require([
                 'echarts',
@@ -1333,7 +1357,6 @@ under the License.
 
 
 
-        <div class="chart" id="line-highlight-point"></div>
         <script>
             require([
                 'echarts'
@@ -1392,7 +1415,6 @@ under the License.
         </script>
 
 
-        <div class="chart" id="line-clip"></div>
         <script>
             require([
                 'echarts'
@@ -1417,6 +1439,45 @@ under the License.
                 var chart = testHelper.create(echarts, 'line-clip', {
                     title: [
                         'The line chart should be rendered without any error in console when `**clip**` is set as `**false**`'
+                    ],
+                    option: option,
+                    height: 400
+                });
+            });
+        </script>
+
+
+        <script>
+            require([
+                'echarts'
+            ], function (echarts) {
+                var option = {
+                    polar: {
+                        center: ['50%', '54%']
+                    },
+                    angleAxis: {
+                        type: 'category',
+                        data: ['a', 'b', 'c'],
+                        boundaryGap: false,
+                    },
+                    radiusAxis: {
+                        min: 0
+                    },
+                    series: [{
+                        coordinateSystem: 'polar',
+                        symbolSize: 20,
+                        name: 'line',
+                        type: 'scatter',
+                        showSymbol: true,
+                        data: [
+                            [0, 0],
+                            [10, 2]
+                        ]
+                    }]
+                };
+                var chart = testHelper.create(echarts, 'polar-clip', {
+                    title: [
+                        'The polar coord clip should include center point in scatter'
                     ],
                     option: option,
                     height: 400

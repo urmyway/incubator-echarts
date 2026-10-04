@@ -17,9 +17,9 @@
 * under the License.
 */
 
-import { Payload, SelectChangedPayload } from '../util/types';
+import { Payload, SelectChangedEvent } from '../util/types';
 import SeriesModel from '../model/Series';
-import { extend, each, isArray } from 'zrender/src/core/util';
+import { extend, each, isArray, isString } from 'zrender/src/core/util';
 import GlobalModel from '../model/Global';
 import { deprecateReplaceLog, deprecateLog } from '../util/log';
 import Eventful from 'zrender/src/core/Eventful';
@@ -28,7 +28,7 @@ import { queryDataIndex } from '../util/model';
 import ExtensionAPI from '../core/ExtensionAPI';
 
 // Legacy data selection action.
-// Inlucdes: pieSelect, pieUnSelect, pieToggleSelect, mapSelect, mapUnSelect, mapToggleSelect
+// Includes: pieSelect, pieUnSelect, pieToggleSelect, mapSelect, mapUnSelect, mapToggleSelect
 export function createLegacyDataSelectAction(seriesType: string, ecRegisterAction: typeof registerAction) {
 
     function getSeriesIndices(ecModel: GlobalModel, payload: Payload) {
@@ -66,7 +66,7 @@ function handleSeriesLegacySelectEvents(
     eventPostfix: 'selectchanged' | 'selected' | 'unselected',
     ecIns: EChartsType,
     ecModel: GlobalModel,
-    payload: SelectChangedPayload
+    payload: SelectChangedEvent
 ) {
     const legacyEventName = type + eventPostfix;
     if (!ecIns.isSilent(legacyEventName)) {
@@ -77,6 +77,7 @@ function handleSeriesLegacySelectEvents(
             mainType: 'series', subType: 'pie'
         }, function (seriesModel: SeriesModel) {
             const seriesIndex = seriesModel.seriesIndex;
+            const selectedMap = seriesModel.option.selectedMap;
             const selected = payload.selected;
             for (let i = 0; i < selected.length; i++) {
                 if (selected[i].seriesIndex === seriesIndex) {
@@ -86,7 +87,7 @@ function handleSeriesLegacySelectEvents(
                         type: legacyEventName,
                         seriesId: seriesModel.id,
                         name: isArray(dataIndex) ? data.getName(dataIndex[0]) : data.getName(dataIndex),
-                        selected: extend({}, seriesModel.option.selectedMap)
+                        selected: isString(selectedMap) ? selectedMap : extend({}, selectedMap)
                     });
                 }
             }
@@ -95,7 +96,7 @@ function handleSeriesLegacySelectEvents(
 }
 
 export function handleLegacySelectEvents(messageCenter: Eventful, ecIns: EChartsType, api: ExtensionAPI) {
-    messageCenter.on('selectchanged', function (params: SelectChangedPayload) {
+    messageCenter.on('selectchanged', function (params: SelectChangedEvent) {
         const ecModel = api.getModel();
         if (params.isFromClick) {
             handleSeriesLegacySelectEvents('map', 'selectchanged', ecIns, ecModel, params);

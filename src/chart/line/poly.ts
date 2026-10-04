@@ -22,13 +22,11 @@
 import Path, { PathProps } from 'zrender/src/graphic/Path';
 import PathProxy from 'zrender/src/core/PathProxy';
 import { cubicRootAt, cubicAt } from 'zrender/src/core/curve';
+import tokens from '../../visual/tokens';
+import { isPointIllegal } from './helper';
 
 const mathMin = Math.min;
 const mathMax = Math.max;
-
-function isPointNull(x: number, y: number) {
-    return isNaN(x) || isNaN(y);
-}
 
 /**
  * Draw smoothed line in non-monotone, in may cause undesired curve in extreme
@@ -56,13 +54,13 @@ function drawSegment(
     let k = 0;
     for (; k < segLen; k++) {
 
-        const x = points[idx * 2];
-        const y = points[idx * 2 + 1];
+        let x = points[idx * 2];
+        let y = points[idx * 2 + 1];
 
         if (idx >= allLen || idx < 0) {
             break;
         }
-        if (isPointNull(x, y)) {
+        if (isPointIllegal(x, y)) {
             if (connectNulls) {
                 idx += dir;
                 continue;
@@ -76,8 +74,8 @@ function drawSegment(
             cpy0 = y;
         }
         else {
-            const dx = x - prevX;
-            const dy = y - prevY;
+            let dx = x - prevX;
+            let dy = y - prevY;
 
             // Ignore tiny segment.
             if ((dx * dx + dy * dy) < 0.5) {
@@ -89,10 +87,23 @@ function drawSegment(
                 let nextIdx = idx + dir;
                 let nextX = points[nextIdx * 2];
                 let nextY = points[nextIdx * 2 + 1];
+                // Ignore duplicate point
+                while (nextX === x && nextY === y && k < segLen) {
+                    k++;
+                    nextIdx += dir;
+                    idx += dir;
+                    nextX = points[nextIdx * 2];
+                    nextY = points[nextIdx * 2 + 1];
+                    x = points[idx * 2];
+                    y = points[idx * 2 + 1];
+                    dx = x - prevX;
+                    dy = y - prevY;
+                }
+
                 let tmpK = k + 1;
                 if (connectNulls) {
                     // Find next point not null
-                    while (isPointNull(nextX, nextY) && tmpK < segLen) {
+                    while (isPointIllegal(nextX, nextY) && tmpK < segLen) {
                         tmpK++;
                         nextIdx += dir;
                         nextX = points[nextIdx * 2];
@@ -106,7 +117,7 @@ function drawSegment(
                 let nextCpx0;
                 let nextCpy0;
                 // Is last point
-                if (tmpK >= segLen || isPointNull(nextX, nextY)) {
+                if (tmpK >= segLen || isPointIllegal(nextX, nextY)) {
                     cpx1 = x;
                     cpy1 = y;
                 }
@@ -123,18 +134,20 @@ function drawSegment(
                     if (smoothMonotone === 'x') {
                         lenPrevSeg = Math.abs(dx0);
                         lenNextSeg = Math.abs(dx1);
-                        cpx1 = x - lenPrevSeg * smooth;
+                        const dir = vx > 0 ? 1 : -1;
+                        cpx1 = x - dir * lenPrevSeg * smooth;
                         cpy1 = y;
-                        nextCpx0 = x + lenPrevSeg * smooth;
+                        nextCpx0 = x + dir * lenNextSeg * smooth;
                         nextCpy0 = y;
                     }
                     else if (smoothMonotone === 'y') {
                         lenPrevSeg = Math.abs(dy0);
                         lenNextSeg = Math.abs(dy1);
+                        const dir = vy > 0 ? 1 : -1;
                         cpx1 = x;
-                        cpy1 = y - lenPrevSeg * smooth;
+                        cpy1 = y - dir * lenPrevSeg * smooth;
                         nextCpx0 = x;
-                        nextCpy0 = y + lenPrevSeg * smooth;
+                        nextCpy0 = y + dir * lenNextSeg * smooth;
                     }
                     else {
                         lenPrevSeg = Math.sqrt(dx0 * dx0 + dy0 * dy0);
@@ -220,7 +233,7 @@ export class ECPolyline extends Path<ECPolylineProps> {
 
     getDefaultStyle() {
         return {
-            stroke: '#000',
+            stroke: tokens.color.neutral99,
             fill: null as string
         };
     }
@@ -240,12 +253,12 @@ export class ECPolyline extends Path<ECPolylineProps> {
         if (shape.connectNulls) {
             // Must remove first and last null values avoid draw error in polygon
             for (; len > 0; len--) {
-                if (!isPointNull(points[len * 2 - 2], points[len * 2 - 1])) {
+                if (!isPointIllegal(points[len * 2 - 2], points[len * 2 - 1])) {
                     break;
                 }
             }
             for (; i < len; i++) {
-                if (!isPointNull(points[i * 2], points[i * 2 + 1])) {
+                if (!isPointIllegal(points[i * 2], points[i * 2 + 1])) {
                     break;
                 }
             }
@@ -364,12 +377,12 @@ export class ECPolygon extends Path {
         if (shape.connectNulls) {
             // Must remove first and last null values avoid draw error in polygon
             for (; len > 0; len--) {
-                if (!isPointNull(points[len * 2 - 2], points[len * 2 - 1])) {
+                if (!isPointIllegal(points[len * 2 - 2], points[len * 2 - 1])) {
                     break;
                 }
             }
             for (; i < len; i++) {
-                if (!isPointNull(points[i * 2], points[i * 2 + 1])) {
+                if (!isPointIllegal(points[i * 2], points[i * 2 + 1])) {
                     break;
                 }
             }

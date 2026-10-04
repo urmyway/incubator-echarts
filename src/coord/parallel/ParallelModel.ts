@@ -20,17 +20,28 @@
 
 import * as zrUtil from 'zrender/src/core/util';
 import ComponentModel from '../../model/Component';
-import Parallel from './Parallel';
-import { DimensionName, ComponentOption, BoxLayoutOptionMixin } from '../../util/types';
+import type Parallel from './Parallel';
+import {
+    DimensionName, ComponentOption, BoxLayoutOptionMixin, ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin
+} from '../../util/types';
 import ParallelAxisModel, { ParallelAxisOption } from './AxisModel';
 import GlobalModel from '../../model/Global';
 import ParallelSeriesModel from '../../chart/parallel/ParallelSeries';
 import SeriesModel from '../../model/Series';
 
 
+export const COORD_SYS_TYPE_PARALLEL = 'parallel';
+export const COMPONENT_TYPE_PARALLEL = COORD_SYS_TYPE_PARALLEL;
+
 export type ParallelLayoutDirection = 'horizontal' | 'vertical';
 
-export interface ParallelCoordinateSystemOption extends ComponentOption, BoxLayoutOptionMixin {
+export interface ParallelCoordinateSystemOption extends
+    ComponentOption,
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin,
+    BoxLayoutOptionMixin {
+
     mainType?: 'parallel';
 
     layout?: ParallelLayoutDirection;
@@ -57,7 +68,7 @@ export interface ParallelCoordinateSystemOption extends ComponentOption, BoxLayo
 
 class ParallelModel extends ComponentModel<ParallelCoordinateSystemOption> {
 
-    static type = 'parallel';
+    static type = COMPONENT_TYPE_PARALLEL;
     readonly type = ParallelModel.type;
 
     static dependencies = ['parallelAxis'];
@@ -70,14 +81,14 @@ class ParallelModel extends ComponentModel<ParallelCoordinateSystemOption> {
     dimensions: DimensionName[];
 
     /**
-     * Coresponding to dimensions.
+     * Corresponding to dimensions.
      */
     parallelAxisIndex: number[];
 
     static layoutMode = 'box' as const;
 
     static defaultOption: ParallelCoordinateSystemOption = {
-        zlevel: 0,
+        // zlevel: 0,
         z: 0,
         left: 80,
         top: 60,

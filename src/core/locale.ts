@@ -25,6 +25,8 @@ import langEN from '../i18n/langEN';
 import langZH from '../i18n/langZH';
 import { isString, clone, merge } from 'zrender/src/core/util';
 
+/* global document */
+
 export type LocaleOption = typeof langEN;
 
 const LOCALE_ZH = 'ZH';
@@ -35,9 +37,8 @@ const localeStorage: Dictionary<LocaleOption> = {};
 const localeModels: Dictionary<Model> = {};
 
 export const SYSTEM_LANG = !env.domSupported ? DEFAULT_LOCALE : (function () {
-    const langStr = (
-        /* eslint-disable-next-line */
-        document.documentElement.lang || navigator.language || (navigator as any).browserLanguage
+    const langStr: string = (
+        document.documentElement.lang || navigator.language || (navigator as any).browserLanguage || DEFAULT_LOCALE
     ).toUpperCase();
     return langStr.indexOf(LOCALE_ZH) > -1 ? LOCALE_ZH : DEFAULT_LOCALE;
 })();

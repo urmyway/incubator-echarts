@@ -17,39 +17,21 @@
 * under the License.
 */
 
-import * as zrUtil from 'zrender/src/core/util';
+import { isString, extend, map, isFunction } from 'zrender/src/core/util';
 import * as graphic from '../../util/graphic';
 import {createTextStyle} from '../../label/labelStyle';
-import * as formatUtil from '../../util/format';
-import * as numberUtil from '../../util/number';
-import CalendarModel from '../../coord/calendar/CalendarModel';
+import { formatTplSimple } from '../../util/format';
+import { parsePercent } from '../../util/number';
+import type CalendarModel from '../../coord/calendar/CalendarModel';
 import {CalendarParsedDateRangeInfo, CalendarParsedDateInfo} from '../../coord/calendar/Calendar';
-import GlobalModel from '../../model/Global';
-import ExtensionAPI from '../../core/ExtensionAPI';
+import type GlobalModel from '../../model/Global';
+import type ExtensionAPI from '../../core/ExtensionAPI';
 import { LayoutOrient, OptionDataValueDate, ZRTextAlign, ZRTextVerticalAlign } from '../../util/types';
 import ComponentView from '../../view/Component';
 import { PathStyleProps } from 'zrender/src/graphic/Path';
 import { TextStyleProps, TextProps } from 'zrender/src/graphic/Text';
-
-const MONTH_TEXT = {
-    EN: [
-        'Jan', 'Feb', 'Mar',
-        'Apr', 'May', 'Jun',
-        'Jul', 'Aug', 'Sep',
-        'Oct', 'Nov', 'Dec'
-    ],
-    CN: [
-        '一月', '二月', '三月',
-        '四月', '五月', '六月',
-        '七月', '八月', '九月',
-        '十月', '十一月', '十二月'
-    ]
-};
-
-const WEEK_TEXT = {
-    EN: ['S', 'M', 'T', 'W', 'T', 'F', 'S'],
-    CN: ['日', '一', '二', '三', '四', '五', '六']
-};
+import { LocaleOption, getLocaleModel } from '../../core/locale';
+import type Model from '../../model/Model';
 
 class CalendarView extends ComponentView {
 
@@ -88,6 +70,9 @@ class CalendarView extends ComponentView {
         const rangeData = coordSys.getRangeInfo();
         const orient = coordSys.getOrient();
 
+        // locale
+        const localeModel = ecModel.getLocaleModel();
+
         this._renderDayRect(calendarModel, rangeData, group);
 
         // _renderLines must be called prior to following function
@@ -95,9 +80,9 @@ class CalendarView extends ComponentView {
 
         this._renderYearText(calendarModel, rangeData, orient, group);
 
-        this._renderMonthText(calendarModel, orient, group);
+        this._renderMonthText(calendarModel, localeModel, orient, group);
 
-        this._renderWeekText(calendarModel, rangeData, orient, group);
+        this._renderWeekText(calendarModel, localeModel, rangeData, orient, group);
     }
 
     // render day rect
@@ -112,7 +97,7 @@ class CalendarView extends ComponentView {
             i = coordSys.getNextNDay(i, 1).time
         ) {
 
-            const point = coordSys.dataToRect([i], false).tl;
+            const point = coordSys.dataToCalendarLayout([i], false).tl;
 
             // every rect
             const rect = new graphic.Rect({
@@ -173,7 +158,7 @@ class CalendarView extends ComponentView {
         function addPoints(date: OptionDataValueDate) {
 
             self._firstDayOfMonth.push(coordSys.getDateInfo(date));
-            self._firstDayPoints.push(coordSys.dataToRect([date], false).tl);
+            self._firstDayPoints.push(coordSys.dataToCalendarLayout([date], false).tl);
 
             const points = self._getLinePointsOfOneWeek(calendarModel, date, orient);
 
@@ -229,7 +214,7 @@ class CalendarView extends ComponentView {
         for (let i = 0; i < 7; i++) {
 
             const tmpD = coordSys.getNextNDay(parsedDate.time, i);
-            const point = coordSys.dataToRect([tmpD.time], false);
+            const point = coordSys.dataToCalendarLayout([tmpD.time], false);
 
             points[2 * tmpD.day] = point.tl;
             points[2 * tmpD.day + 1] = point[orient === 'horizontal' ? 'bl' : 'tr'];
@@ -244,11 +229,11 @@ class CalendarView extends ComponentView {
         params: T
     ) {
 
-        if (typeof formatter === 'string' && formatter) {
-            return formatUtil.formatTplSimple(formatter, params);
+        if (isString(formatter) && formatter) {
+            return formatTplSimple(formatter, params);
         }
 
-        if (typeof formatter === 'function') {
+        if (isFunction(formatter)) {
             return formatter(params);
         }
 
@@ -352,7 +337,8 @@ class CalendarView extends ComponentView {
             z2: 30,
             style: createTextStyle(yearLabel, {
                 text: content
-            })
+            }),
+            silent: yearLabel.get('silent')
         });
         yearText.attr(this._yearTextPositionControl(yearText, posPoints[pos], orient, pos, margin));
 
@@ -403,7 +389,12 @@ class CalendarView extends ComponentView {
     }
 
     // render month and year text
-    _renderMonthText(calendarModel: CalendarModel, orient: LayoutOrient, group: graphic.Group) {
+    _renderMonthText(
+        calendarModel: CalendarModel,
+        localeModel: Model<LocaleOption>,
+        orient: LayoutOrient,
+        group: graphic.Group
+    ) {
         const monthLabel = calendarModel.getModel('monthLabel');
 
         if (!monthLabel.get('show')) {
@@ -417,14 +408,22 @@ class CalendarView extends ComponentView {
 
         const termPoints = [this._tlpoints, this._blpoints];
 
-        if (zrUtil.isString(nameMap)) {
-            nameMap = MONTH_TEXT[nameMap.toUpperCase() as 'CN' | 'EN'] || [];
+        if (!nameMap || isString(nameMap)) {
+            if (nameMap) {
+                // case-sensitive
+                localeModel = getLocaleModel(nameMap as string) || localeModel;
+            }
+            // PENDING
+            // for ZH locale, original form is `一月` but current form is `1月`
+            nameMap = localeModel.get(['time', 'monthAbbr']) || [];
         }
 
         const idx = pos === 'start' ? 0 : 1;
         const axis = orient === 'horizontal' ? 0 : 1;
         margin = pos === 'start' ? -margin : margin;
         const isCenter = (align === 'center');
+
+        const labelSilent = monthLabel.get('silent');
 
         for (let i = 0; i < termPoints[idx].length - 1; i++) {
 
@@ -450,10 +449,11 @@ class CalendarView extends ComponentView {
 
             const monthText = new graphic.Text({
                 z2: 30,
-                style: zrUtil.extend(
+                style: extend(
                     createTextStyle(monthLabel, {text: content}),
                     this._monthTextPositionControl(tmp, isCenter, orient, pos, margin)
-                )
+                ),
+                silent: labelSilent
             });
 
             group.add(monthText);
@@ -493,6 +493,7 @@ class CalendarView extends ComponentView {
     // render weeks
     _renderWeekText(
         calendarModel: CalendarModel,
+        localeModel: Model<LocaleOption>,
         rangeData: CalendarParsedDateRangeInfo,
         orient: LayoutOrient,
         group: graphic.Group
@@ -509,8 +510,17 @@ class CalendarView extends ComponentView {
         let margin = dayLabel.get('margin');
         const firstDayOfWeek = coordSys.getFirstDayOfWeek();
 
-        if (zrUtil.isString(nameMap)) {
-            nameMap = WEEK_TEXT[nameMap.toUpperCase() as 'CN' | 'EN'] || [];
+        if (!nameMap || isString(nameMap)) {
+            if (nameMap) {
+                // case-sensitive
+                localeModel = getLocaleModel(nameMap as string) || localeModel;
+            }
+            // Use the first letter of `dayOfWeekAbbr` if `dayOfWeekShort` doesn't exist in the locale file
+            const dayOfWeekShort = localeModel.get(['time', 'dayOfWeekShort' as any]);
+            nameMap = dayOfWeekShort || map(
+                localeModel.get(['time', 'dayOfWeekAbbr']),
+                val => val[0]
+            );
         }
 
         let start = coordSys.getNextNDay(
@@ -518,7 +528,7 @@ class CalendarView extends ComponentView {
         ).time;
 
         const cellSize = [coordSys.getCellWidth(), coordSys.getCellHeight()];
-        margin = numberUtil.parsePercent(margin, Math.min(cellSize[1], cellSize[0]));
+        margin = parsePercent(margin, Math.min(cellSize[1], cellSize[0]));
 
         if (pos === 'start') {
             start = coordSys.getNextNDay(
@@ -527,18 +537,21 @@ class CalendarView extends ComponentView {
             margin = -margin;
         }
 
+        const labelSilent = dayLabel.get('silent');
+
         for (let i = 0; i < 7; i++) {
 
             const tmpD = coordSys.getNextNDay(start, i);
-            const point = coordSys.dataToRect([tmpD.time], false).center;
+            const point = coordSys.dataToCalendarLayout([tmpD.time], false).center;
             let day = i;
             day = Math.abs((i + firstDayOfWeek) % 7);
             const weekText = new graphic.Text({
                 z2: 30,
-                style: zrUtil.extend(
+                style: extend(
                     createTextStyle(dayLabel, {text: nameMap[day]}),
                     this._weekTextPositionControl(point, orient, pos, margin, cellSize)
-                )
+                ),
+                silent: labelSilent
             });
 
             group.add(weekText);

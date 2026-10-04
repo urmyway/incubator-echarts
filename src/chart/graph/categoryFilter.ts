@@ -18,17 +18,22 @@
 */
 
 import GlobalModel from '../../model/Global';
-import GraphSeriesModel, { GraphNodeItemOption } from './GraphSeries';
+import GraphSeriesModel, { GraphNodeItemOption, SERIES_TYPE_GRAPH } from './GraphSeries';
 import type LegendModel from '../../component/legend/LegendModel';
+import { isNumber } from 'zrender/src/core/util';
+import { createSimpleOverallStageHandler } from '../../util/model';
 
-export default function categoryFilter(ecModel: GlobalModel) {
+
+export const graphCategoryFilterStageHandler = createSimpleOverallStageHandler(SERIES_TYPE_GRAPH, categoryFilter);
+
+function categoryFilter(ecModel: GlobalModel) {
     const legendModels = ecModel.findComponents({
         mainType: 'legend'
     }) as LegendModel[];
     if (!legendModels || !legendModels.length) {
         return;
     }
-    ecModel.eachSeriesByType('graph', function (graphSeries: GraphSeriesModel) {
+    ecModel.eachSeriesByType(SERIES_TYPE_GRAPH, function (graphSeries: GraphSeriesModel) {
         const categoriesData = graphSeries.getCategoriesData();
         const graph = graphSeries.getGraph();
         const data = graph.data;
@@ -39,7 +44,7 @@ export default function categoryFilter(ecModel: GlobalModel) {
             const model = data.getItemModel<GraphNodeItemOption>(idx);
             let category = model.getShallow('category');
             if (category != null) {
-                if (typeof category === 'number') {
+                if (isNumber(category)) {
                     category = categoryNames[category];
                 }
                 // If in any legend component the status is not selected.

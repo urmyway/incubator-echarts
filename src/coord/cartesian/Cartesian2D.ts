@@ -23,21 +23,24 @@ import Cartesian from './Cartesian';
 import { ScaleDataValue } from '../../util/types';
 import Axis2D from './Axis2D';
 import { CoordinateSystem } from '../CoordinateSystem';
-import GridModel from './GridModel';
+import GridModel, { COORD_SYS_TYPE_CARTESIAN_2D } from './GridModel';
 import Grid from './Grid';
 import Scale from '../../scale/Scale';
 import { invert } from 'zrender/src/core/matrix';
 import { applyTransform } from 'zrender/src/core/vector';
+import { getScaleExtentForMappingUnsafe } from '../../scale/scaleMapper';
+import { hasBreaks } from '../../scale/break';
 
 export const cartesian2DDimensions = ['x', 'y'];
 
 function canCalculateAffineTransform(scale: Scale) {
-    return scale.type === 'interval' || scale.type === 'time';
+    // Only supported on linear space.
+    return (scale.type === 'interval' || scale.type === 'time') && !hasBreaks(scale);
 }
 
 class Cartesian2D extends Cartesian<Axis2D> implements CoordinateSystem {
 
-    readonly type = 'cartesian2d';
+    readonly type = COORD_SYS_TYPE_CARTESIAN_2D;
 
     readonly dimensions = cartesian2DDimensions;
 
@@ -62,8 +65,8 @@ class Cartesian2D extends Cartesian<Axis2D> implements CoordinateSystem {
             return;
         }
 
-        const xScaleExtent = xAxisScale.getExtent();
-        const yScaleExtent = yAxisScale.getExtent();
+        const xScaleExtent = getScaleExtentForMappingUnsafe(xAxisScale, null);
+        const yScaleExtent = getScaleExtentForMappingUnsafe(yAxisScale, null);
 
         const start = this.dataToPoint([xScaleExtent[0], yScaleExtent[0]]);
         const end = this.dataToPoint([xScaleExtent[1], yScaleExtent[1]]);
@@ -85,9 +88,17 @@ class Cartesian2D extends Cartesian<Axis2D> implements CoordinateSystem {
     }
 
     /**
-     * Base axis will be used on stacking.
+     * Base axis will be used on stacking and series such as 'bar', 'pictorialBar', etc.
      */
     getBaseAxis(): Axis2D {
+        // FIXME:
+        //  (1) We should allow series (e.g., bar) to specify a base axis when
+        //      both axes are type "value", rather than force to xAxis or angleAxis.
+        //      NOTE: At present BoxplotSeries has its own overide `getBaseAxis`.
+        //      `CoordinateSystem['getBaseAxis']` probably should not exist, since it
+        //      may introduce inconsistency with `Series['getBaseAxis']`.
+        //  (2) "base axis" info is required in "createSeriesData" stage for "stack",
+        //      (see `dataStackHelper.ts` for details). Currently it is hard coded there.
         return this.getAxesByScale('ordinal')[0]
             || this.getAxesByScale('time')[0]
             || this.getAxis('x');
@@ -105,11 +116,24 @@ class Cartesian2D extends Cartesian<Axis2D> implements CoordinateSystem {
             && this.getAxis('y').containData(data[1]);
     }
 
+    containZone(data1: ScaleDataValue[], data2: ScaleDataValue[]): boolean {
+        const zoneDiag1 = this.dataToPoint(data1);
+        const zoneDiag2 = this.dataToPoint(data2);
+        const area = this.getArea();
+        const zone = new BoundingRect(
+            zoneDiag1[0],
+            zoneDiag1[1],
+            zoneDiag2[0] - zoneDiag1[0],
+            zoneDiag2[1] - zoneDiag1[1]);
+        return area.intersect(zone);
+    }
+
     dataToPoint(data: ScaleDataValue[], clamp?: boolean, out?: number[]): number[] {
         out = out || [];
         const xVal = data[0];
         const yVal = data[1];
-        // Fast path
+        // [CAVEAT]: Do not add time consuming operation within and before fast path.
+        // Fast path.
         if (this._transform
             // It's supported that if data is like `[Inifity, 123]`, where only Y pixel calculated.
             && xVal != null
@@ -119,6 +143,7 @@ class Cartesian2D extends Cartesian<Axis2D> implements CoordinateSystem {
         ) {
             return applyTransform(out, data as number[], this._transform);
         }
+
         const xAxis = this.getAxis('x');
         const yAxis = this.getAxis('y');
         out[0] = xAxis.toGlobalCoord(xAxis.dataToCoord(xVal, clamp));
@@ -146,8 +171,8 @@ class Cartesian2D extends Cartesian<Axis2D> implements CoordinateSystem {
         return out;
     }
 
-    pointToData(point: number[], clamp?: boolean): number[] {
-        const out: number[] = [];
+    pointToData(point: number[], clamp?: boolean, out?: number[]): number[] {
+        out = out || [];
         if (this._invTransform) {
             return applyTransform(out, point, this._invTransform);
         }
@@ -166,17 +191,18 @@ class Cartesian2D extends Cartesian<Axis2D> implements CoordinateSystem {
      * Get rect area of cartesian.
      * Area will have a contain function to determine if a point is in the coordinate system.
      */
-    getArea(): Cartesian2DArea {
+    getArea(tolerance?: number): Cartesian2DArea {
+        tolerance = tolerance || 0;
+
         const xExtent = this.getAxis('x').getGlobalExtent();
         const yExtent = this.getAxis('y').getGlobalExtent();
-        const x = Math.min(xExtent[0], xExtent[1]);
-        const y = Math.min(yExtent[0], yExtent[1]);
-        const width = Math.max(xExtent[0], xExtent[1]) - x;
-        const height = Math.max(yExtent[0], yExtent[1]) - y;
+        const x = Math.min(xExtent[0], xExtent[1]) - tolerance;
+        const y = Math.min(yExtent[0], yExtent[1]) - tolerance;
+        const width = Math.max(xExtent[0], xExtent[1]) - x + tolerance;
+        const height = Math.max(yExtent[0], yExtent[1]) - y + tolerance;
 
         return new BoundingRect(x, y, width, height);
     }
-
 };
 
 interface Cartesian2DArea extends BoundingRect {}

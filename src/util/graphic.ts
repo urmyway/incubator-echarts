@@ -21,7 +21,7 @@ import * as pathTool from 'zrender/src/tool/path';
 import * as matrix from 'zrender/src/core/matrix';
 import * as vector from 'zrender/src/core/vector';
 import Path, { PathProps } from 'zrender/src/graphic/Path';
-import Transformable from 'zrender/src/core/Transformable';
+import Transformable, { copyTransform } from 'zrender/src/core/Transformable';
 import ZRImage, { ImageStyleProps } from 'zrender/src/graphic/Image';
 import Group from 'zrender/src/graphic/Group';
 import ZRText from 'zrender/src/graphic/Text';
@@ -38,7 +38,7 @@ import Arc from 'zrender/src/graphic/shape/Arc';
 import CompoundPath from 'zrender/src/graphic/CompoundPath';
 import LinearGradient from 'zrender/src/graphic/LinearGradient';
 import RadialGradient from 'zrender/src/graphic/RadialGradient';
-import BoundingRect from 'zrender/src/core/BoundingRect';
+import BoundingRect, { RectLike } from 'zrender/src/core/BoundingRect';
 import OrientedBoundingRect from 'zrender/src/core/OrientedBoundingRect';
 import Point from 'zrender/src/core/Point';
 import IncrementalDisplayable from 'zrender/src/graphic/IncrementalDisplayable';
@@ -49,38 +49,64 @@ import Element from 'zrender/src/Element';
 import Model from '../model/Model';
 import {
     AnimationOptionMixin,
-    AnimationDelayCallbackParam,
     ZRRectLike,
     ZRStyleProps,
-    PayloadAnimationPart,
-    AnimationOption,
     CommonTooltipOption,
-    ComponentItemTooltipLabelFormatterParams
+    ComponentItemTooltipLabelFormatterParams,
+    NullUndefined,
+    ComponentOption,
+    Payload
 } from './types';
 import {
     extend,
     isArrayLike,
     map,
     defaults,
-    isObject,
-    retrieve2,
     isString,
     keys,
     each,
-    hasOwn
+    hasOwn,
+    isArray,
+    isNumber,
+    clone,
+    assert,
 } from 'zrender/src/core/util';
-import { AnimationEasing } from 'zrender/src/animation/easing';
 import { getECData } from './innerStore';
 import ComponentModel from '../model/Component';
 
+import {
+    updateProps,
+    initProps,
+    removeElement,
+    removeElementWithFadeOut,
+    isElementRemoved
+} from '../animation/basicTransition';
+import { ExtendedElement } from '../core/ExtendedElement';
+import { mathMin, mathMax, mathAbs } from './number';
+import type ExtensionAPI from '../core/ExtensionAPI';
+import type CanvasPainter from 'zrender/src/canvas/Painter';
 
-const mathMax = Math.max;
-const mathMin = Math.min;
+/**
+ * @deprecated export for compatitable reason
+ */
+export {updateProps, initProps, removeElement, removeElementWithFadeOut, isElementRemoved};
+
 
 const _customShapeMap: Dictionary<{ new(): Path }> = {};
 
 type ExtendShapeOpt = Parameters<typeof Path.extend>[0];
 type ExtendShapeReturn = ReturnType<typeof Path.extend>;
+
+export const XY = ['x', 'y'] as const;
+export const WH = ['width', 'height'] as const;
+
+/**
+ * NOTICE: Only canvas renderer can set these hoverLayer flags.
+ * @see ElementCommonState['hoverLayer']
+ */
+export const HOVER_LAYER_NO = 0;
+export const HOVER_LAYER_FROM_THRESHOLD = 1;
+export const HOVER_LAYER_FOR_INCREMENTAL = 2;
 
 /**
  * Extend shape with parameters
@@ -133,10 +159,10 @@ export function registerShape(name: string, ShapeClass: {new(): Path}) {
  * (2) In the features like `custom series`, `graphic component`, the user input
  * `{tpye: 'xxx'}` does not only specify shapes but also specify other graphic
  * elements like `'group'`, `'text'`, `'image'` or event `'path'`. Those names
- * are reserved names, that is, if some user register a shape named `'image'`,
+ * are reserved names, that is, if some user registers a shape named `'image'`,
  * the shape will not be used. If we intending to add some more reserved names
  * in feature, that might bring break changes (disable some existing user shape
- * names). But that case probably rearly happen. So we dont make more mechanism
+ * names). But that case probably rarely happens. So we don't make more mechanism
  * to resolve this issue here.
  *
  * @param name
@@ -259,31 +285,29 @@ export function resizePath(path: SVGPath, rect: ZRRectLike): void {
 /**
  * Sub pixel optimize line for canvas
  */
-export function subPixelOptimizeLine(param: {
+export function subPixelOptimizeLine(
     shape: {
         x1: number, y1: number, x2: number, y2: number
     },
-    style: {
-        lineWidth: number
-    }
-}) {
-    subPixelOptimizeUtil.subPixelOptimizeLine(param.shape, param.shape, param.style);
-    return param;
+    lineWidth: number
+) {
+    subPixelOptimizeUtil.subPixelOptimizeLine(shape, shape, {lineWidth});
+    return shape;
 }
 
 /**
  * Sub pixel optimize rect for canvas
  */
-export function subPixelOptimizeRect(param: {
+export function subPixelOptimizeRect(
     shape: {
         x: number, y: number, width: number, height: number
     },
     style: {
-        lineWidth: number
+        lineWidth?: number
     }
-}) {
-    subPixelOptimizeUtil.subPixelOptimizeRect(param.shape, param.shape, param.style);
-    return param;
+) {
+    subPixelOptimizeUtil.subPixelOptimizeRect(shape, shape, style);
+    return shape;
 }
 
 /**
@@ -296,262 +320,6 @@ export function subPixelOptimizeRect(param: {
  */
 export const subPixelOptimize = subPixelOptimizeUtil.subPixelOptimize;
 
-
-type AnimateOrSetPropsOption = {
-    dataIndex?: number;
-    cb?: () => void;
-    during?: (percent: number) => void;
-    removeOpt?: AnimationOption
-    isFrom?: boolean;
-};
-
-function animateOrSetProps<Props>(
-    animationType: 'init' | 'update' | 'remove',
-    el: Element<Props>,
-    props: Props,
-    animatableModel?: Model<AnimationOptionMixin> & {
-        getAnimationDelayParams?: (el: Element<Props>, dataIndex: number) => AnimationDelayCallbackParam
-    },
-    dataIndex?: AnimateOrSetPropsOption['dataIndex'] | AnimateOrSetPropsOption['cb'] | AnimateOrSetPropsOption,
-    cb?: AnimateOrSetPropsOption['cb'] | AnimateOrSetPropsOption['during'],
-    during?: AnimateOrSetPropsOption['during']
-) {
-    let isFrom = false;
-    let removeOpt: AnimationOption;
-    if (typeof dataIndex === 'function') {
-        during = cb;
-        cb = dataIndex;
-        dataIndex = null;
-    }
-    else if (isObject(dataIndex)) {
-        cb = dataIndex.cb;
-        during = dataIndex.during;
-        isFrom = dataIndex.isFrom;
-        removeOpt = dataIndex.removeOpt;
-        dataIndex = dataIndex.dataIndex;
-    }
-    const isUpdate = animationType === 'update';
-    const isRemove = animationType === 'remove';
-
-    let animationPayload: PayloadAnimationPart;
-    // Check if there is global animation configuration from dataZoom/resize can override the config in option.
-    // If animation is enabled. Will use this animation config in payload.
-    // If animation is disabled. Just ignore it.
-    if (animatableModel && animatableModel.ecModel) {
-        const updatePayload = animatableModel.ecModel.getUpdatePayload();
-        animationPayload = (updatePayload && updatePayload.animation) as PayloadAnimationPart;
-    }
-    const animationEnabled = animatableModel && animatableModel.isAnimationEnabled();
-
-    if (!isRemove) {
-        // Must stop the remove animation.
-        el.stopAnimation('remove');
-    }
-
-    if (animationEnabled) {
-        let duration: number | Function;
-        let animationEasing: AnimationEasing;
-        let animationDelay: number | Function;
-        if (animationPayload) {
-            duration = animationPayload.duration || 0;
-            animationEasing = animationPayload.easing || 'cubicOut';
-            animationDelay = animationPayload.delay || 0;
-        }
-        else if (isRemove) {
-            removeOpt = removeOpt || {};
-            duration = retrieve2(removeOpt.duration, 200);
-            animationEasing = retrieve2(removeOpt.easing, 'cubicOut');
-            animationDelay = 0;
-        }
-        else {
-            duration = animatableModel.getShallow(
-                isUpdate ? 'animationDurationUpdate' : 'animationDuration'
-            );
-            animationEasing = animatableModel.getShallow(
-                isUpdate ? 'animationEasingUpdate' : 'animationEasing'
-            );
-            animationDelay = animatableModel.getShallow(
-                isUpdate ? 'animationDelayUpdate' : 'animationDelay'
-            );
-        }
-        if (typeof animationDelay === 'function') {
-            animationDelay = animationDelay(
-                dataIndex as number,
-                animatableModel.getAnimationDelayParams
-                    ? animatableModel.getAnimationDelayParams(el, dataIndex as number)
-                    : null
-            );
-        }
-        if (typeof duration === 'function') {
-            duration = duration(dataIndex as number);
-        }
-
-        duration > 0
-            ? (
-                isFrom
-                    ? el.animateFrom(props, {
-                        duration: duration as number,
-                        delay: animationDelay as number || 0,
-                        easing: animationEasing,
-                        done: cb,
-                        force: !!cb || !!during,
-                        scope: animationType,
-                        during: during
-                    })
-                    : el.animateTo(props, {
-                        duration: duration as number,
-                        delay: animationDelay as number || 0,
-                        easing: animationEasing,
-                        done: cb,
-                        force: !!cb || !!during,
-                        setToFinal: true,
-                        scope: animationType,
-                        during: during
-                    })
-            )
-            // FIXME:
-            // If `duration` is 0, only the animation on props
-            // can be stoped, other animation should be continued?
-            // But at present using duration 0 in `animateTo`, `animateFrom`
-            // might cause unexpected behavior.
-            : (
-                el.stopAnimation(),
-                // If `isFrom`, the props is the "from" props.
-                !isFrom && el.attr(props),
-                cb && (cb as AnimateOrSetPropsOption['cb'])()
-            );
-    }
-    else {
-        el.stopAnimation();
-        !isFrom && el.attr(props);
-        // Call during once.
-        during && during(1);
-        cb && (cb as AnimateOrSetPropsOption['cb'])();
-    }
-}
-
-/**
- * Update graphic element properties with or without animation according to the
- * configuration in series.
- *
- * Caution: this method will stop previous animation.
- * So do not use this method to one element twice before
- * animation starts, unless you know what you are doing.
- * @example
- *     graphic.updateProps(el, {
- *         position: [100, 100]
- *     }, seriesModel, dataIndex, function () { console.log('Animation done!'); });
- *     // Or
- *     graphic.updateProps(el, {
- *         position: [100, 100]
- *     }, seriesModel, function () { console.log('Animation done!'); });
- */
-function updateProps<Props>(
-    el: Element<Props>,
-    props: Props,
-    // TODO: TYPE AnimatableModel
-    animatableModel?: Model<AnimationOptionMixin>,
-    dataIndex?: AnimateOrSetPropsOption['dataIndex'] | AnimateOrSetPropsOption['cb'] | AnimateOrSetPropsOption,
-    cb?: AnimateOrSetPropsOption['cb'] | AnimateOrSetPropsOption['during'],
-    during?: AnimateOrSetPropsOption['during']
-) {
-    animateOrSetProps('update', el, props, animatableModel, dataIndex, cb, during);
-}
-
-export {updateProps};
-
-/**
- * Init graphic element properties with or without animation according to the
- * configuration in series.
- *
- * Caution: this method will stop previous animation.
- * So do not use this method to one element twice before
- * animation starts, unless you know what you are doing.
- */
-export function initProps<Props>(
-    el: Element<Props>,
-    props: Props,
-    animatableModel?: Model<AnimationOptionMixin>,
-    dataIndex?: AnimateOrSetPropsOption['dataIndex'] | AnimateOrSetPropsOption['cb'] | AnimateOrSetPropsOption,
-    cb?: AnimateOrSetPropsOption['cb'] | AnimateOrSetPropsOption['during'],
-    during?: AnimateOrSetPropsOption['during']
-) {
-    animateOrSetProps('init', el, props, animatableModel, dataIndex, cb, during);
-}
-
-/**
- * Remove graphic element
- */
-export function removeElement<Props>(
-    el: Element<Props>,
-    props: Props,
-    animatableModel?: Model<AnimationOptionMixin>,
-    dataIndex?: AnimateOrSetPropsOption['dataIndex'] | AnimateOrSetPropsOption['cb'] | AnimateOrSetPropsOption,
-    cb?: AnimateOrSetPropsOption['cb'] | AnimateOrSetPropsOption['during'],
-    during?: AnimateOrSetPropsOption['during']
-) {
-    // Don't do remove animation twice.
-    if (isElementRemoved(el)) {
-        return;
-    }
-
-    animateOrSetProps('remove', el, props, animatableModel, dataIndex, cb, during);
-}
-
-function fadeOutDisplayable(
-    el: Displayable,
-    animatableModel?: Model<AnimationOptionMixin>,
-    dataIndex?: number,
-    done?: AnimateOrSetPropsOption['cb']
-) {
-    el.removeTextContent();
-    el.removeTextGuideLine();
-    removeElement(el, {
-        style: {
-            opacity: 0
-        }
-    }, animatableModel, dataIndex, done);
-}
-
-export function removeElementWithFadeOut(
-    el: Element,
-    animatableModel?: Model<AnimationOptionMixin>,
-    dataIndex?: number
-) {
-    function doRemove() {
-        el.parent && el.parent.remove(el);
-    }
-    // Hide label and labelLine first
-    // TODO Also use fade out animation?
-    if (!el.isGroup) {
-        fadeOutDisplayable(el as Displayable, animatableModel, dataIndex, doRemove);
-    }
-    else {
-        (el as Group).traverse(function (disp: Displayable) {
-            if (!disp.isGroup) {
-                // Can invoke doRemove multiple times.
-                fadeOutDisplayable(disp as Displayable, animatableModel, dataIndex, doRemove);
-            }
-        });
-    }
-}
-
-/**
- * If element is removed.
- * It can determine if element is having remove animation.
- */
-export function isElementRemoved(el: Element) {
-    if (!el.__zr) {
-        return true;
-    }
-    for (let i = 0; i < el.animators.length; i++) {
-        const animator = el.animators[i];
-        if (animator.scope === 'remove') {
-            return true;
-        }
-    }
-    return false;
-}
 
 /**
  * Get transform matrix of target (param target),
@@ -609,9 +377,9 @@ export function transformDirection(
 
     // Pick a base, ensure that transform result will not be (0, 0).
     const hBase = (transform[4] === 0 || transform[5] === 0 || transform[0] === 0)
-        ? 1 : Math.abs(2 * transform[4] / transform[0]);
+        ? 1 : mathAbs(2 * transform[4] / transform[0]);
     const vBase = (transform[4] === 0 || transform[5] === 0 || transform[2] === 0)
-        ? 1 : Math.abs(2 * transform[4] / transform[2]);
+        ? 1 : mathAbs(2 * transform[4] / transform[2]);
 
     let vertex: vector.VectorArray = [
         direction === 'left' ? -hBase : direction === 'right' ? hBase : 0,
@@ -620,7 +388,7 @@ export function transformDirection(
 
     vertex = applyTransform(vertex, transform, invert);
 
-    return Math.abs(vertex[0]) > Math.abs(vertex[1])
+    return mathAbs(vertex[0]) > mathAbs(vertex[1])
         ? (vertex[0] > 0 ? 'right' : 'left')
         : (vertex[1] > 0 ? 'bottom' : 'top');
 }
@@ -660,7 +428,7 @@ export function groupTransition(
             rotation: el.rotation
         };
         if (isPath(el)) {
-            obj.shape = extend({}, el.shape);
+            obj.shape = clone(el.shape);
         }
         return obj;
     }
@@ -679,8 +447,8 @@ export function groupTransition(
 }
 
 export function clipPointsByRect(points: vector.VectorArray[], rect: ZRRectLike): number[][] {
-    // FIXME: this way migth be incorrect when grpahic clipped by a corner.
-    // and when element have border.
+    // FIXME: This way might be incorrect when graphic clipped by a corner
+    // and when element has a border.
     return map(points, function (point) {
         let x = point[0];
         x = mathMax(x, rect.x);
@@ -695,7 +463,7 @@ export function clipPointsByRect(points: vector.VectorArray[], rect: ZRRectLike)
 /**
  * Return a new clipped rect. If rect size are negative, return undefined.
  */
-export function clipRectByRect(targetRect: ZRRectLike, rect: ZRRectLike): ZRRectLike {
+export function clipRectByRect(targetRect: ZRRectLike, rect: ZRRectLike): ZRRectLike | undefined {
     const x = mathMax(targetRect.x, rect.x);
     const x2 = mathMin(targetRect.x + targetRect.width, rect.x + rect.width);
     const y = mathMax(targetRect.y, rect.y);
@@ -776,7 +544,7 @@ export function lineLineIntersect(
     const ny = b2y - b1y;
 
     // `vec_m` and `vec_n` are parallel iff
-    //     exising `k` such that `vec_m = k · vec_n`, equivalent to `vec_m X vec_n = 0`.
+    //     existing `k` such that `vec_m = k · vec_n`, equivalent to `vec_m X vec_n = 0`.
     const nmCrossProduct = crossProduct2d(nx, ny, mx, my);
     if (nearZero(nmCrossProduct)) {
         return false;
@@ -811,6 +579,98 @@ function nearZero(val: number) {
     return val <= (1e-6) && val >= -(1e-6);
 }
 
+/**
+ * NOTE:
+ *  A negative-width/height rect (due to negative margins) is not supported;
+ *  it will be clampped to zero width/height.
+ *  Although negative-width/height rects can be defined reasonably following the
+ *  similar sense in CSS, but they are rarely used, hard to understand and complicated.
+ *
+ * @param rect Assume its width/height >= 0 if existing.
+ *  x/y/width/height is allowed to be NaN,
+ *  for the case that only x/width or y/height is intended to be computed.
+ * @param delta
+ *  If be `number[]`, should be `[top, right, bottom, left]`,
+ *      which can be used in padding or margin case.
+ *      @see `normalizeCssArray` in `util/format.ts`
+ *  If be `number`, it means [delta, delta, delta, delta],
+ *      which can be used in lineWidth (borderWith) case,
+ *      [NOTICE]: commonly pass lineWidth / 2, following the convention that border is
+ *      half inside half outside of the rect.
+ * @param shrinkOrExpand
+ *  `true` - shrink if `delta[i]` is positive, commmonly used in `padding` case.
+ *  `false` - expand if `delta[i]` is positive, commmonly used in `margin` case. (default)
+ * @param noNegative
+ *  `true` - negative `delta[i]` will be clampped to 0.
+ *  `false` - No clamp to `delta`. (default).
+ * @return The input `rect`.
+ */
+export function expandOrShrinkRect<TRect extends RectLike>(
+    rect: TRect,
+    delta: number[] | number | NullUndefined,
+    shrinkOrExpand: boolean,
+    noNegative: boolean,
+    minSize?: number[] // by default [0, 0].
+): TRect {
+    if (delta == null) {
+        return rect;
+    }
+    else if (isNumber(delta)) {
+        _tmpExpandRectDelta[0] = _tmpExpandRectDelta[1] = _tmpExpandRectDelta[2] = _tmpExpandRectDelta[3] = delta;
+    }
+    else {
+        if (__DEV__) {
+            assert(delta.length === 4);
+        }
+        _tmpExpandRectDelta[0] = delta[0];
+        _tmpExpandRectDelta[1] = delta[1];
+        _tmpExpandRectDelta[2] = delta[2];
+        _tmpExpandRectDelta[3] = delta[3];
+    }
+    if (noNegative) {
+        _tmpExpandRectDelta[0] = mathMax(0, _tmpExpandRectDelta[0]);
+        _tmpExpandRectDelta[1] = mathMax(0, _tmpExpandRectDelta[1]);
+        _tmpExpandRectDelta[2] = mathMax(0, _tmpExpandRectDelta[2]);
+        _tmpExpandRectDelta[3] = mathMax(0, _tmpExpandRectDelta[3]);
+    }
+    if (shrinkOrExpand) {
+        _tmpExpandRectDelta[0] = -_tmpExpandRectDelta[0];
+        _tmpExpandRectDelta[1] = -_tmpExpandRectDelta[1];
+        _tmpExpandRectDelta[2] = -_tmpExpandRectDelta[2];
+        _tmpExpandRectDelta[3] = -_tmpExpandRectDelta[3];
+    }
+    expandRectOnOneDimension(rect, _tmpExpandRectDelta, 'x', 'width', 3, 1, minSize && minSize[0] || 0);
+    expandRectOnOneDimension(rect, _tmpExpandRectDelta, 'y', 'height', 0, 2, minSize && minSize[1] || 0);
+
+    return rect;
+}
+const _tmpExpandRectDelta = [0, 0, 0, 0];
+function expandRectOnOneDimension(
+    rect: RectLike,
+    delta: number[],
+    xy: 'x' | 'y',
+    wh: 'width' | 'height',
+    ltIdx: 3 | 0, rbIdx: 1 | 2,
+    minSize: number
+): void {
+    const deltaSum = delta[rbIdx] + delta[ltIdx];
+    const oldSize = rect[wh];
+    rect[wh] += deltaSum;
+    minSize = mathMax(0, mathMin(minSize, oldSize));
+    if (rect[wh] < minSize) {
+        rect[wh] = minSize;
+        // Try to make the position of the zero rect reasonable in most visual cases.
+        rect[xy] += (
+            delta[ltIdx] >= 0 ? -delta[ltIdx]
+            : delta[rbIdx] >= 0 ? oldSize + delta[rbIdx]
+            : mathAbs(deltaSum) > 1e-8 ? (oldSize - minSize) * delta[ltIdx] / deltaSum
+            : 0
+        );
+    }
+    else {
+        rect[xy] -= delta[ltIdx];
+    }
+}
 
 export function setTooltipConfig(opt: {
     el: Element,
@@ -853,12 +713,241 @@ export function setTooltipConfig(opt: {
         name: itemName,
         option: defaults({
             content: itemName,
+            encodeHTMLContent: true,
             formatterParams: formatterParams
         }, itemTooltipOptionObj)
     };
 }
 
-// Register built-in shapes. These shapes might be overwirtten
+function traverseElement(el: Element, cb: (el: Element) => boolean | void) {
+    let stopped;
+    // TODO
+    // Polyfill for fixing zrender group traverse don't visit it's root issue.
+    if (el.isGroup) {
+        stopped = cb(el);
+    }
+    if (!stopped) {
+        el.traverse(cb);
+    }
+}
+
+export function traverseElements(els: Element | Element[] | undefined | null, cb: (el: Element) => boolean | void) {
+    if (els) {
+        if (isArray(els)) {
+            for (let i = 0; i < els.length; i++) {
+                traverseElement(els[i], cb);
+            }
+        }
+        else {
+            traverseElement(els, cb);
+        }
+    }
+}
+
+/**
+ * After a boundingRect applying a `transform`, whether to be still parallel screen X and Y.
+ */
+export function isBoundingRectAxisAligned(transform: matrix.MatrixArray | NullUndefined): boolean {
+    return !transform
+        || (mathAbs(transform[1]) < AXIS_ALIGN_EPSILON && mathAbs(transform[2]) < AXIS_ALIGN_EPSILON)
+        || (mathAbs(transform[0]) < AXIS_ALIGN_EPSILON && mathAbs(transform[3]) < AXIS_ALIGN_EPSILON);
+}
+const AXIS_ALIGN_EPSILON = 1e-5;
+
+/**
+ * Create or copy to the existing bounding rect to avoid modifying `source`.
+ *
+ * @usage
+ *  out.rect = ensureCopyRect(out.rect, sourceRect);
+ */
+export function ensureCopyRect(
+    target: BoundingRect | NullUndefined,
+    source: BoundingRect
+): BoundingRect {
+    return target ? BoundingRect.copy(target, source) : source.clone();
+}
+
+/**
+ * Create or copy to the existing transform to avoid modifying `source`.
+ *
+ * [CAUTION]: transform is `NullUndefined` if no transform, following convention of zrender,
+ *  and enable to bypass some unnecessary calculation, since in most cases there is no transform.
+ *
+ * @usage
+ *  out.transform = ensureCopyTransform(out.transform, sourceTransform);
+ */
+export function ensureCopyTransform(
+    target: matrix.MatrixArray | NullUndefined,
+    source: matrix.MatrixArray | NullUndefined
+): matrix.MatrixArray | NullUndefined {
+    return source ? matrix.copy(target || matrix.create(), source) : undefined;
+}
+
+export function retrieveZInfo(
+    model: Model<Partial<Pick<ComponentOption, 'z' | 'zlevel'>>>,
+): {
+    z: ComponentOption['z']
+    zlevel: ComponentOption['zlevel']
+} {
+    return {
+        z: model.get('z') || 0,
+        zlevel: model.get('zlevel') || 0,
+    };
+}
+
+/**
+ * Assume all of the elements has the same `z` and `zlevel`.
+ */
+export function calcZ2Range(el: Element): {
+    min: number
+    max: number
+} {
+    let max = -Infinity;
+    let min = Infinity;
+    traverseElement(el, el => {
+        visitEl(el);
+        visitEl(el.getTextContent());
+        visitEl(el.getTextGuideLine());
+    });
+    function visitEl(el: Element): void {
+        if (!el || el.isGroup) {
+            return;
+        }
+        const currentStates = el.currentStates;
+        if (currentStates.length) {
+            for (let idx = 0; idx < currentStates.length; idx++) {
+                calcZ2(el.states[currentStates[idx]] as Displayable);
+            }
+        }
+        calcZ2(el as Displayable);
+    }
+    function calcZ2(entity: Pick<Displayable, 'z2'>): void {
+        if (entity) {
+            const z2 = entity.z2;
+            // Consider z2 may be NullUndefined
+            if (z2 > max) {
+                max = z2;
+            }
+            if (z2 < min) {
+                min = z2;
+            }
+        }
+    }
+    if (min > max) {
+        min = max = 0;
+    }
+    return {min, max};
+}
+
+export function traverseUpdateZ(
+    el: Element,
+    z: number,
+    zlevel: number,
+): void {
+    doUpdateZ(el, z, zlevel, -Infinity);
+}
+
+function doUpdateZ(
+    el: Element,
+    z: number,
+    zlevel: number,
+    // FIXME: Ideally all the labels should be above all the glyphs by default,
+    //  e.g. in graph, edge labels should be above node elements.
+    //  Currently impl does not guarantee that.
+    maxZ2: number,
+): number {
+    // `ignoreModelZ` is used to intentionally lift elements to cover other elements,
+    // where maxZ2 (for label.z2) should also not be counted for its parents.
+    if ((el as ExtendedElement).ignoreModelZ) {
+        return maxZ2;
+    }
+
+    // Group may also have textContent
+    const label = el.getTextContent();
+    const labelLine = el.getTextGuideLine();
+    const isGroup = el.isGroup;
+
+    if (isGroup) {
+        // set z & zlevel of children elements of Group
+        const children = (el as Group).childrenRef();
+        for (let i = 0; i < children.length; i++) {
+            maxZ2 = mathMax(
+                doUpdateZ(
+                    children[i],
+                    z,
+                    zlevel,
+                    maxZ2
+                ),
+                maxZ2
+            );
+        }
+    }
+    else {
+        // not Group
+        (el as Displayable).z = z;
+        (el as Displayable).zlevel = zlevel;
+
+        maxZ2 = mathMax((el as Displayable).z2 || 0, maxZ2);
+    }
+
+    // NOTICE: Do not call any method that can set REDRAW_BIT,
+    // otherwise progressive rendering is broken.
+
+    // always set z and zlevel if label/labelLine exists
+    if (label) {
+        label.z = z;
+        label.zlevel = zlevel;
+        // lift z2 of text content
+        // TODO if el.emphasis.z2 is spcefied, what about textContent.
+        isFinite(maxZ2) && (label.z2 = maxZ2 + 2);
+    }
+    if (labelLine) {
+        const textGuideLineConfig = el.textGuideLineConfig;
+        labelLine.z = z;
+        labelLine.zlevel = zlevel;
+        isFinite(maxZ2)
+            && (labelLine.z2 = maxZ2 + (textGuideLineConfig && textGuideLineConfig.showAbove ? 1 : -1));
+    }
+    return maxZ2;
+}
+
+export function payloadDisableAnimation<TPayload extends Payload>(
+    payload: TPayload
+): TPayload {
+    // Disable animation in `updateProps` of `graphic.ts`.
+    payload.animation = {duration: 0};
+    return payload;
+}
+
+/**
+ * Decompose an affine matrix to
+ * x/y/scaleX/scaleY/rotation/skewX/skewY
+ */
+export function decomposeTransform(
+    out: Transformable,
+    mt: matrix.MatrixArray | NullUndefined
+): Transformable {
+    mt
+        ? matrix.copy(tmpDTR.transform, mt)
+        : matrix.identity(tmpDTR.transform);
+    // Use a tmp transformable to avoid effects from parent.
+    tmpDTR.decomposeTransform();
+    copyTransform(out, tmpDTR);
+    return out;
+}
+const tmpDTR = new Transformable();
+tmpDTR.transform = matrix.create();
+
+/**
+ * If not canvas painter, return null/undefined.
+ */
+export function getCurrentCanvasPainter(api: ExtensionAPI): CanvasPainter | NullUndefined {
+    const painter = api.getZr().painter;
+    return painter.getType() === 'canvas' ? (painter as CanvasPainter) : null;
+}
+
+
+// Register built-in shapes. These shapes might be overwritten
 // by users, although we do not recommend that.
 registerShape('circle', Circle);
 registerShape('ellipse', Ellipse);

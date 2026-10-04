@@ -18,7 +18,6 @@
 */
 
 import { Text } from '../util/graphic';
-import { deprecateLog } from '../util/log';
 
 type TextStyleProps = Text['style'];
 export function getTextRect(
@@ -31,8 +30,6 @@ export function getTextRect(
     truncate?: boolean,
     lineHeight?: number
 ) {
-    deprecateLog('getTextRect is deprecated.');
-
     const textEl = new Text({
         style: {
             text,

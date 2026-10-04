@@ -19,7 +19,8 @@
 
 /* global Uint8ClampedArray */
 
-import * as zrUtil from 'zrender/src/core/util';
+import { platformApi } from 'zrender/src/core/platform';
+import tokens from '../../visual/tokens';
 
 const GRADIENT_LEVELS = 256;
 
@@ -43,7 +44,7 @@ class HeatmapLayer {
     };
 
     constructor() {
-        const canvas = zrUtil.createCanvas();
+        const canvas = platformApi.createCanvas();
         this.canvas = canvas;
     }
 
@@ -127,7 +128,7 @@ class HeatmapLayer {
      * get canvas of a black circle brush used for canvas to draw later
      */
     _getBrush() {
-        const brushCanvas = this._brushCanvas || (this._brushCanvas = zrUtil.createCanvas());
+        const brushCanvas = this._brushCanvas || (this._brushCanvas = platformApi.createCanvas());
         // set brush size
         const r = this.pointSize + this.blurSize;
         const d = r * 2;
@@ -144,7 +145,7 @@ class HeatmapLayer {
         ctx.shadowBlur = this.blurSize;
         // draw the shadow in black, and use alpha and shadow blur to generate
         // color in color map
-        ctx.shadowColor = '#000';
+        ctx.shadowColor = tokens.color.neutral99;
 
         // draw circle in the left to the canvas
         ctx.beginPath();

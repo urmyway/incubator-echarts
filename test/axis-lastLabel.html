@@ -48,6 +48,7 @@ under the License.
         <div class="chart" id="chart1"></div>
         <div class="chart" id="chart2"></div>
         <div class="chart" id="chart3"></div>
+        <div class="chart" id="chart4"></div>
 
 
 
@@ -130,10 +131,6 @@ under the License.
                 'echarts'
             ], function (rainfallData, echarts) {
 
-                var chart = echarts.init(document.getElementById('chart0'), null, {
-
-                });
-
                 var option = {
                     tooltip : {
                         trigger: 'axis'
@@ -203,10 +200,6 @@ under the License.
                 'data/rainfall.json.js',
                 'echarts'
             ], function (rainfallData, echarts) {
-
-                var chart = echarts.init(document.getElementById('chart1'), null, {
-
-                });
 
                 var option = {
                     tooltip : {
@@ -289,10 +282,6 @@ under the License.
                 'echarts'
             ], function (rainfallData, echarts) {
 
-                var chart = echarts.init(document.getElementById('chart1'), null, {
-
-                });
-
                 var option = {
                     tooltip: {
                         trigger: 'axis'
@@ -300,8 +289,15 @@ under the License.
                     dataZoom: {
                         show: true,
                         realtime: true,
-                        startValue: '2009-09-20 12:00',
-                        end: 100
+                        // The `startValue` does not exist in the categories as it's splitted by '-' rather than '/'
+                        // It will fallback to the first category
+                        // The same to `endValue` / `end` / `start`
+                        startValue: '2009-07-20 12:00',
+                        // the `endValue` should work
+                        endValue: '2009/8/20 12:00',
+                        // start: 50,
+                        // end: 60,
+                        // end: 'aaaa'
                     },
                     xAxis: {
                         axisTick: {
@@ -371,10 +367,6 @@ under the License.
                 'data/rainfall.json.js',
                 'echarts'
             ], function (rainfallData, echarts) {
-
-                var chart = echarts.init(document.getElementById('chart1'), null, {
-
-                });
 
                 var option = {
                     tooltip : {
@@ -457,6 +449,206 @@ under the License.
 
         </script>
 
+
+
+
+
+
+        <script>
+
+            require([
+                'echarts',
+            ], function (echarts /*, data */) {
+
+                const _ctx = {
+                    xAxis_axisTick_interval: {
+                        text: 'xAxis.axisTick.interval:',
+                        value: 'NOT_SET',
+                        values: ['NOT_SET', 2, 0, 1]
+                    },
+                    xAxis_axisLabel_interval: {
+                        text: 'xAxis.axisLabel.interval:',
+                        value: 'NOT_SET',
+                        values: [
+                            'NOT_SET', 2, 0, 1,
+                            function (val) {
+                                return !(val % 6);
+                            }
+                        ]
+                    },
+                    br0: {},
+                    dataZoomOrMinMax: {
+                        text: 'use:',
+                        value: 'use_xAxis_min_max',
+                        values: ['use_xAxis_min_max', 'use_dataZoom'],
+                    },
+                    showMinMaxLabel: {
+                        text: 'xAxis.axisLabel.showMinLabel/showMaxLabel:',
+                        value: 'NOT_SET',
+                        values: ['NOT_SET', true, false],
+                    },
+                };
+
+                function createOption() {
+                    var xAxisData = [];
+                    var data1 = [];
+                    var data2 = [];
+                    var data3 = [];
+                    var bigTooltipBound = 10;
+
+                    for (var i = 0; i < 50; i++) {
+                        xAxisData.push('Some' + i);
+                        data1.push(+(Math.random() + 0.5).toFixed(3));
+                        data2.push(+(Math.random() + 0.5).toFixed(3));
+                        data3.push(+(Math.random() + 0.5).toFixed(3));
+                    }
+
+                    function getSymbolSize(value, param) {
+                        if (param.dataIndex <= bigTooltipBound) {
+                            return 30;
+                        }
+                        return 10;
+                    }
+
+                    var itemStyle = {
+                        normal: {
+                            borderColor: 'white',
+                            borderWidth: 3,
+                            lineStyle: {
+                                width: 1
+                            }
+                        }
+                    };
+
+                    var xAxisConfig = {
+                        axisLabel: {},
+                        axisTick: {}
+                    };
+                    if (_ctx.xAxis_axisLabel_interval.value !== 'NOT_SET') {
+                        xAxisConfig.axisLabel.interval = _ctx.xAxis_axisLabel_interval.value;
+                    }
+                    if (_ctx.xAxis_axisTick_interval.value !== 'NOT_SET') {
+                        xAxisConfig.axisTick.interval = _ctx.xAxis_axisTick_interval.value;
+                    }
+                    if (_ctx.showMinMaxLabel.value !== 'NOT_SET') {
+                        xAxisConfig.axisLabel.showMinLabel = _ctx.showMinMaxLabel.value;
+                        xAxisConfig.axisLabel.showMaxLabel = _ctx.showMinMaxLabel.value;
+                    }
+
+                    var dataZoomOption = null;
+                    var minMaxConfig = {};
+                    if (_ctx.dataZoomOrMinMax.value === 'use_dataZoom') {
+                        dataZoomOption = [{
+                            type: 'inside',
+                            startValue: 'Some5',
+                            endValue: 'Some15'
+                        }, {
+                            type: 'slider',
+                            bottom: 40,
+                            startValue: 'Some5',
+                            endValue: 'Some15'
+                        }];
+                    }
+                    else if (_ctx.dataZoomOrMinMax.value === 'use_xAxis_min_max') {
+                        minMaxConfig = {
+                            min: 5,
+                            max: 15,
+                        };
+                    }
+
+                    return {
+                        backgroundColor: '#eee',
+                        legend: {
+                            data: ['line', 'line2', 'line3'],
+                            itemWidth: 50,
+                            itemHeight: 40,
+                            top: 0
+                        },
+                        visualMap: null, // For testing null exists in option.
+                        tooltip: {
+                            trigger: 'axis',
+                            // set enterable as false to check coord of event triggered by tooltip.
+                            enterable: false,
+                            axisPointer: {
+                                type: 'shadow'
+                            },
+                        },
+                        grid: {
+                            left: 50,
+                            // Intentional test for this case:
+                            // This width can hide xAxis category labels alternately,
+                            // but show min max xAxis label.
+                            width: 530,
+                            bottom: 100
+                        },
+                        xAxis: {
+                            data: xAxisData,
+                            boundaryGap: false,
+                            splitArea: {
+                                show: true
+                            },
+                            splitLine: {
+                                show: true
+                            },
+                            ...minMaxConfig,
+                            ...xAxisConfig,
+                        },
+                        yAxis: {
+                            splitArea: {
+                                show: true
+                            }
+                        },
+                        dataZoom: dataZoomOption,
+                        series: [{
+                            name: 'line',
+                            type: 'line',
+                            stack: 'all',
+                            symbol: 'circle',
+                            symbolSize: getSymbolSize,
+                            data: data1,
+                            itemStyle: itemStyle,
+                            step: 'end'
+                        }, {
+                            name: 'line2',
+                            type: 'line',
+                            stack: 'all',
+                            symbol: 'circle',
+                            symbolSize: getSymbolSize,
+                            data: data2,
+                            itemStyle: itemStyle,
+                            step: 'end'
+                        }, {
+                            name: 'line3',
+                            type: 'line',
+                            stack: 'all',
+                            symbol: 'triangle',
+                            symbolSize: getSymbolSize,
+                            data: data3,
+                            itemStyle: itemStyle,
+                            step: 'end'
+                        }]
+                    };
+                }
+
+                function updateChart() {
+                    chart.setOption(createOption(), {notMerge: true});
+                }
+
+                var chart = testHelper.create(echarts, 'chart4', {
+                    title: [
+                        'Axis category with axisLabel.interval.',
+                        'start/end tick/label should not be displayed by default.',
+                    ],
+                    option: createOption(),
+                    inputsStyle: 'compact',
+                    inputs: testHelper.createInputsSimply(_ctx, updateChart)
+
+                }); // End of `testHelper.create`
+
+            }); // End of `require`
+
+
+        </script>
 
 
 

@@ -17,18 +17,31 @@
 * under the License.
 */
 
-/* global Float32Array */
-
 import {subPixelOptimize} from '../../util/graphic';
 import createRenderPlanner from '../helper/createRenderPlanner';
-import {parsePercent} from '../../util/number';
-import {retrieve2} from 'zrender/src/core/util';
-import { StageHandler, StageHandlerProgressParams } from '../../util/types';
-import CandlestickSeriesModel from './CandlestickSeries';
-import List from '../../data/List';
+import {mathMax, mathMin, parsePercent} from '../../util/number';
+import {map, retrieve2} from 'zrender/src/core/util';
+import { DimensionIndex, StageHandler, StageHandlerProgressParams } from '../../util/types';
+import CandlestickSeriesModel, { SERIES_TYPE_CANDLESTICK, CandlestickDataItemOption } from './CandlestickSeries';
+import SeriesData from '../../data/SeriesData';
 import { RectLike } from 'zrender/src/core/BoundingRect';
+import DataStore from '../../data/DataStore';
+import { createFloat32Array } from '../../util/vendor';
+import { makeCallOnlyOnce } from '../../util/model';
+import {
+    requireAxisStatistics
+} from '../../coord/axisStatistics';
+import { EChartsExtensionInstallRegisters } from '../../extension';
+import { registerAxisContainShapeHandler } from '../../coord/scaleRawExtentInfo';
+import {
+    createBandWidthBasedAxisContainShapeHandler,
+    createMetricsNonOrdinalLinearPositiveMinGap,
+    makeAxisStatKey
+} from '../helper/axisSnippets';
+import { calcBandWidth } from '../../coord/axisBand';
 
-const LargeArr = typeof Float32Array !== 'undefined' ? Float32Array : Array;
+
+const callOnlyOnce = makeCallOnlyOnce();
 
 export interface CandlestickItemLayout {
     sign: number
@@ -42,9 +55,9 @@ export interface CandlestickLayoutMeta {
     isSimpleBox: boolean
 }
 
-const candlestickLayout: StageHandler = {
+export const candlestickLayout: StageHandler = {
 
-    seriesType: 'candlestick',
+    seriesType: SERIES_TYPE_CANDLESTICK,
 
     plan: createRenderPlanner(),
 
@@ -53,15 +66,15 @@ const candlestickLayout: StageHandler = {
         const coordSys = seriesModel.coordinateSystem;
         const data = seriesModel.getData();
         const candleWidth = calculateCandleWidth(seriesModel, data);
-        const cDimIdx = 0;
-        const vDimIdx = 1;
+        const cDimIdx = seriesModel.getWhiskerBoxesLayout() === 'horizontal' ? 0 : 1;
+        const vDimIdx = 1 - cDimIdx;
         const coordDims = ['x', 'y'];
-        const cDim = data.mapDimension(coordDims[cDimIdx]);
-        const vDims = data.mapDimensionsAll(coordDims[vDimIdx]);
-        const openDim = vDims[0];
-        const closeDim = vDims[1];
-        const lowestDim = vDims[2];
-        const highestDim = vDims[3];
+        const cDimI = data.getDimensionIndex(data.mapDimension(coordDims[cDimIdx]));
+        const vDimsI = map(data.mapDimensionsAll(coordDims[vDimIdx]), data.getDimensionIndex, data);
+        const openDimI = vDimsI[0];
+        const closeDimI = vDimsI[1];
+        const lowestDimI = vDimsI[2];
+        const highestDimI = vDimsI[3];
 
         data.setLayout({
             candleWidth: candleWidth,
@@ -69,7 +82,7 @@ const candlestickLayout: StageHandler = {
             isSimpleBox: candleWidth <= 1.3
         } as CandlestickLayoutMeta);
 
-        if (cDim == null || vDims.length < 4) {
+        if (cDimI < 0 || vDimsI.length < 4) {
             return;
         }
 
@@ -78,18 +91,19 @@ const candlestickLayout: StageHandler = {
                 ? largeProgress : normalProgress
         };
 
-        function normalProgress(params: StageHandlerProgressParams, data: List) {
+        function normalProgress(params: StageHandlerProgressParams, data: SeriesData) {
             let dataIndex;
+            const store = data.getStore();
             while ((dataIndex = params.next()) != null) {
 
-                const axisDimVal = data.get(cDim, dataIndex) as number;
-                const openVal = data.get(openDim, dataIndex) as number;
-                const closeVal = data.get(closeDim, dataIndex) as number;
-                const lowestVal = data.get(lowestDim, dataIndex) as number;
-                const highestVal = data.get(highestDim, dataIndex) as number;
+                const axisDimVal = store.get(cDimI, dataIndex) as number;
+                const openVal = store.get(openDimI, dataIndex) as number;
+                const closeVal = store.get(closeDimI, dataIndex) as number;
+                const lowestVal = store.get(lowestDimI, dataIndex) as number;
+                const highestVal = store.get(highestDimI, dataIndex) as number;
 
-                const ocLow = Math.min(openVal, closeVal);
-                const ocHigh = Math.max(openVal, closeVal);
+                const ocLow = mathMin(openVal, closeVal);
+                const ocHigh = mathMax(openVal, closeVal);
 
                 const ocLowPoint = getPoint(ocLow, axisDimVal);
                 const ocHighPoint = getPoint(ocHigh, axisDimVal);
@@ -107,8 +121,10 @@ const candlestickLayout: StageHandler = {
                     subPixelOptimizePoint(ocLowPoint)
                 );
 
+                const itemModel = data.getItemModel<CandlestickDataItemOption>(dataIndex);
+                const hasDojiColor = !!itemModel.get(['itemStyle', 'borderColorDoji']);
                 data.setItemLayout(dataIndex, {
-                    sign: getSign(data, dataIndex, openVal, closeVal, closeDim),
+                    sign: getSign(store, dataIndex, openVal, closeVal, closeDimI, hasDojiColor),
                     initBaseline: openVal > closeVal
                         ? ocHighPoint[vDimIdx] : ocLowPoint[vDimIdx], // open point.
                     ends: ends,
@@ -162,21 +178,23 @@ const candlestickLayout: StageHandler = {
             }
         }
 
-        function largeProgress(params: StageHandlerProgressParams, data: List) {
+        function largeProgress(params: StageHandlerProgressParams, data: SeriesData) {
             // Structure: [sign, x, yhigh, ylow, sign, x, yhigh, ylow, ...]
-            const points = new LargeArr(params.count * 4);
+            const points = createFloat32Array(params.count * 4);
             let offset = 0;
             let point;
             const tmpIn: number[] = [];
             const tmpOut: number[] = [];
             let dataIndex;
+            const store = data.getStore();
+            const hasDojiColor = !!seriesModel.get(['itemStyle', 'borderColorDoji']);
 
             while ((dataIndex = params.next()) != null) {
-                const axisDimVal = data.get(cDim, dataIndex) as number;
-                const openVal = data.get(openDim, dataIndex) as number;
-                const closeVal = data.get(closeDim, dataIndex) as number;
-                const lowestVal = data.get(lowestDim, dataIndex) as number;
-                const highestVal = data.get(highestDim, dataIndex) as number;
+                const axisDimVal = store.get(cDimI, dataIndex) as number;
+                const openVal = store.get(openDimI, dataIndex) as number;
+                const closeVal = store.get(closeDimI, dataIndex) as number;
+                const lowestVal = store.get(lowestDimI, dataIndex) as number;
+                const highestVal = store.get(highestDimI, dataIndex) as number;
 
                 if (isNaN(axisDimVal) || isNaN(lowestVal) || isNaN(highestVal)) {
                     points[offset++] = NaN;
@@ -184,7 +202,7 @@ const candlestickLayout: StageHandler = {
                     continue;
                 }
 
-                points[offset++] = getSign(data, dataIndex, openVal, closeVal, closeDim);
+                points[offset++] = getSign(store, dataIndex, openVal, closeVal, closeDimI, hasDojiColor);
 
                 tmpIn[cDimIdx] = axisDimVal;
 
@@ -202,8 +220,18 @@ const candlestickLayout: StageHandler = {
     }
 };
 
-function getSign(data: List, dataIndex: number, openVal: number, closeVal: number, closeDim: string) {
-    let sign;
+/**
+ * Get the sign of a single data.
+ *
+ * @returns 0 for doji with hasDojiColor: true,
+ *          1 for positive,
+ *          -1 for negative.
+ */
+function getSign(
+    store: DataStore, dataIndex: number, openVal: number, closeVal: number, closeDimI: DimensionIndex,
+    hasDojiColor: boolean
+): -1 | 1 | 0 {
+    let sign: -1 | 1 | 0;
     if (openVal > closeVal) {
         sign = -1;
     }
@@ -211,26 +239,27 @@ function getSign(data: List, dataIndex: number, openVal: number, closeVal: numbe
         sign = 1;
     }
     else {
-        sign = dataIndex > 0
-            // If close === open, compare with close of last record
-            ? (data.get(closeDim, dataIndex - 1) <= closeVal ? 1 : -1)
-            // No record of previous, set to be positive
-            : 1;
+        sign = hasDojiColor
+            // When doji color is set, use it instead of color/color0.
+            ? 0
+            : (dataIndex > 0
+                // If close === open, compare with close of last record
+                ? ((store.get(closeDimI, dataIndex - 1) as number) <= closeVal ? 1 : -1)
+                // No record of previous, set to be positive
+                : 1
+            );
     }
 
     return sign;
 }
 
-function calculateCandleWidth(seriesModel: CandlestickSeriesModel, data: List) {
+function calculateCandleWidth(seriesModel: CandlestickSeriesModel, data: SeriesData) {
     const baseAxis = seriesModel.getBaseAxis();
-    let extent;
 
-    const bandWidth = baseAxis.type === 'category'
-        ? baseAxis.getBandWidth()
-        : (
-            extent = baseAxis.getExtent(),
-            Math.abs(extent[1] - extent[0]) / data.count()
-        );
+    const bandWidth = calcBandWidth(
+        baseAxis,
+        {fromStat: {key: makeAxisStatKey(SERIES_TYPE_CANDLESTICK)}, min: 1}
+    ).w;
 
     const barMaxWidth = parsePercent(
         retrieve2(seriesModel.get('barMaxWidth'), bandWidth),
@@ -245,7 +274,23 @@ function calculateCandleWidth(seriesModel: CandlestickSeriesModel, data: List) {
     return barWidth != null
         ? parsePercent(barWidth, bandWidth)
         // Put max outer to ensure bar visible in spite of overlap.
-        : Math.max(Math.min(bandWidth / 2, barMaxWidth), barMinWidth);
+        : mathMax(mathMin(bandWidth / 2, barMaxWidth), barMinWidth);
 }
 
-export default candlestickLayout;
+export function registerCandlestickAxisHandlers(registers: EChartsExtensionInstallRegisters) {
+    callOnlyOnce(registers, function () {
+        const axisStatKey = makeAxisStatKey(SERIES_TYPE_CANDLESTICK);
+        requireAxisStatistics(
+            registers,
+            {
+                key: axisStatKey,
+                seriesType: SERIES_TYPE_CANDLESTICK,
+                getMetrics: createMetricsNonOrdinalLinearPositiveMinGap
+            }
+        );
+        registerAxisContainShapeHandler(
+            axisStatKey,
+            createBandWidthBasedAxisContainShapeHandler(axisStatKey)
+        );
+    });
+}

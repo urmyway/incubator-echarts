@@ -18,7 +18,7 @@
 */
 
 import * as zrUtil from 'zrender/src/core/util';
-import createListSimply from '../helper/createListSimply';
+import createSeriesDataSimply from '../helper/createSeriesDataSimply';
 import {defaultEmphasis} from '../../util/model';
 import {makeSeriesEncodeForNameBased} from '../../data/helper/sourceHelper';
 import LegendVisualProvider from '../../visual/LegendVisualProvider';
@@ -36,24 +36,36 @@ import {
     LayoutOrient,
     VerticalAlign,
     SeriesLabelOption,
-    SeriesEncodeOptionMixin
+    SeriesEncodeOptionMixin,
+    DefaultStatesMixinEmphasis,
+    CallbackDataParams,
+    ComponentOnMatrixOptionMixin,
+    ComponentOnCalendarOptionMixin
 } from '../../util/types';
 import GlobalModel from '../../model/Global';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
+import tokens from '../../visual/tokens';
 
 type FunnelLabelOption = Omit<SeriesLabelOption, 'position'> & {
     position?: LabelOption['position']
         | 'outer' | 'inner' | 'center' | 'rightTop' | 'rightBottom' | 'leftTop' | 'leftBottom'
 };
 
-export interface FunnelStateOption {
-    itemStyle?: ItemStyleOption
+interface FunnelStatesMixin {
+    emphasis?: DefaultStatesMixinEmphasis
+}
+
+export interface FunnelCallbackDataParams extends CallbackDataParams {
+    percent: number
+}
+export interface FunnelStateOption<TCbParams = never> {
+    itemStyle?: ItemStyleOption<TCbParams>
     label?: FunnelLabelOption
     labelLine?: LabelLineOption
 }
 
 export interface FunnelDataItemOption
-    extends FunnelStateOption, StatesOptionMixin<FunnelStateOption>,
+    extends FunnelStateOption, StatesOptionMixin<FunnelStateOption, FunnelStatesMixin>,
     OptionDataItemObject<OptionDataValueNumeric> {
 
     itemStyle?: ItemStyleOption & {
@@ -62,7 +74,10 @@ export interface FunnelDataItemOption
     }
 }
 
-export interface FunnelSeriesOption extends SeriesOption<FunnelStateOption>, FunnelStateOption,
+export interface FunnelSeriesOption
+    extends SeriesOption<FunnelStateOption<FunnelCallbackDataParams>, FunnelStatesMixin>,
+    FunnelStateOption<FunnelCallbackDataParams>,
+    ComponentOnCalendarOptionMixin, ComponentOnMatrixOptionMixin,
     BoxLayoutOptionMixin, SeriesEncodeOptionMixin {
     type?: 'funnel'
 
@@ -86,11 +101,11 @@ export interface FunnelSeriesOption extends SeriesOption<FunnelStateOption>, Fun
     data?: (OptionDataValueNumeric | OptionDataValueNumeric[] | FunnelDataItemOption)[]
 }
 
-class FunnelSeriesModel extends SeriesModel<FunnelSeriesOption> {
-    static type = 'series.funnel' as const;
-    type = FunnelSeriesModel.type;
+export const SERIES_TYPE_FUNNEL = 'funnel';
 
-    useColorPaletteOnData = true;
+class FunnelSeriesModel extends SeriesModel<FunnelSeriesOption> {
+    static readonly type = 'series.' + SERIES_TYPE_FUNNEL;
+    readonly type = FunnelSeriesModel.type;
 
     init(option: FunnelSeriesOption) {
         super.init.apply(this, arguments as any);
@@ -104,8 +119,8 @@ class FunnelSeriesModel extends SeriesModel<FunnelSeriesOption> {
         this._defaultLabelLine(option);
     }
 
-    getInitialData(this: FunnelSeriesModel, option: FunnelSeriesOption, ecModel: GlobalModel): List {
-        return createListSimply(this, {
+    getInitialData(this: FunnelSeriesModel, option: FunnelSeriesOption, ecModel: GlobalModel): SeriesData {
+        return createSeriesDataSimply(this, {
             coordDimensions: ['value'],
             encodeDefaulter: zrUtil.curry(makeSeriesEncodeForNameBased, this)
         });
@@ -125,9 +140,9 @@ class FunnelSeriesModel extends SeriesModel<FunnelSeriesOption> {
     }
 
     // Overwrite
-    getDataParams(dataIndex: number) {
+    getDataParams(dataIndex: number): FunnelCallbackDataParams {
         const data = this.getData();
-        const params = super.getDataParams(dataIndex);
+        const params = super.getDataParams(dataIndex) as FunnelCallbackDataParams;
         const valueDim = data.mapDimension('value');
         const sum = data.getSum(valueDim);
         // Percent is 0 if sum is 0
@@ -138,13 +153,15 @@ class FunnelSeriesModel extends SeriesModel<FunnelSeriesOption> {
     }
 
     static defaultOption: FunnelSeriesOption = {
-        zlevel: 0,                  // 一级层叠
+        coordinateSystemUsage: 'box',
+        // zlevel: 0,                  // 一级层叠
         z: 2,                       // 二级层叠
         legendHoverLink: true,
+        colorBy: 'data',
         left: 80,
         top: 60,
         right: 80,
-        bottom: 60,
+        bottom: 65,
         // width: {totalWidth} - left - right,
         // height: {totalHeight} - top - bottom,
 
@@ -172,7 +189,7 @@ class FunnelSeriesModel extends SeriesModel<FunnelSeriesOption> {
         },
         itemStyle: {
             // color: 各异,
-            borderColor: '#fff',
+            borderColor: tokens.color.neutral00,
             borderWidth: 1
         },
         emphasis: {
@@ -182,7 +199,7 @@ class FunnelSeriesModel extends SeriesModel<FunnelSeriesOption> {
         },
         select: {
             itemStyle: {
-                borderColor: '#212121'
+                borderColor: tokens.color.primary
             }
         }
     };

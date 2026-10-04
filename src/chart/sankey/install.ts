@@ -19,12 +19,12 @@
 
 import { EChartsExtensionInstallRegisters } from '../../extension';
 import SankeyView from './SankeyView';
-import SankeySeriesModel from './SankeySeries';
-
-import sankeyLayout from './sankeyLayout';
-import sankeyVisual from './sankeyVisual';
-import { Payload } from '../../util/types';
+import SankeySeriesModel, { SERIES_TYPE_SANKEY } from './SankeySeries';
+import { COMPONENT_MAIN_TYPE_SERIES, Payload } from '../../util/types';
 import GlobalModel from '../../model/Global';
+import {registerRoamActionSimply} from '../../component/helper/roamHelper';
+import { sankeyLayoutStageHandler } from './sankeyLayout';
+import { sankeyVisualStageHandler } from './sankeyVisual';
 
 interface SankeyDragNodePayload extends Payload {
     localX: number
@@ -35,8 +35,8 @@ export function install(registers: EChartsExtensionInstallRegisters) {
     registers.registerChartView(SankeyView);
     registers.registerSeriesModel(SankeySeriesModel);
 
-    registers.registerLayout(sankeyLayout);
-    registers.registerVisual(sankeyVisual);
+    registers.registerLayout(sankeyLayoutStageHandler);
+    registers.registerVisual(sankeyVisualStageHandler);
 
     registers.registerAction({
         type: 'dragNode',
@@ -45,12 +45,14 @@ export function install(registers: EChartsExtensionInstallRegisters) {
         update: 'update'
     }, function (payload: SankeyDragNodePayload, ecModel: GlobalModel) {
         ecModel.eachComponent({
-            mainType: 'series',
-            subType: 'sankey',
+            mainType: COMPONENT_MAIN_TYPE_SERIES,
+            subType: SERIES_TYPE_SANKEY,
             query: payload
         }, function (seriesModel: SankeySeriesModel) {
             seriesModel.setNodePosition(payload.dataIndex, [payload.localX, payload.localY]);
         });
     });
+
+    registerRoamActionSimply(registers, COMPONENT_MAIN_TYPE_SERIES, SERIES_TYPE_SANKEY);
 
 }

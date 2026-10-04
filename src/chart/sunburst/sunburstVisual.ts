@@ -17,33 +17,43 @@
 * under the License.
 */
 
+import { lift } from 'zrender/src/tool/color';
+import { extend, isString } from 'zrender/src/core/util';
 import GlobalModel from '../../model/Global';
-import SunburstSeriesModel, { SunburstSeriesNodeItemOption } from './SunburstSeries';
-import { extend } from 'zrender/src/core/util';
+import SunburstSeriesModel, { SERIES_TYPE_SUNBURST, SunburstSeriesNodeItemOption } from './SunburstSeries';
 import { Dictionary, ColorString } from '../../util/types';
 import { TreeNode } from '../../data/Tree';
-import { lift } from 'zrender/src/tool/color';
+import tokens from '../../visual/tokens';
+import { createSimpleOverallStageHandler } from '../../util/model';
 
-export default function sunburstVisual(ecModel: GlobalModel) {
+
+export const sunburstVisualStageHandler = createSimpleOverallStageHandler(SERIES_TYPE_SUNBURST, sunburstVisual);
+
+function sunburstVisual(ecModel: GlobalModel) {
 
     const paletteScope: Dictionary<ColorString> = {};
 
     // Default color strategy
     function pickColor(node: TreeNode, seriesModel: SunburstSeriesModel, treeHeight: number) {
+        if (node.depth === 0) {
+            // Don't use palette color for the root node, because it's displayed only when drilling down.
+            return tokens.color.neutral50;
+        }
+
         // Choose color from palette based on the first level.
         let current = node;
         while (current && current.depth > 1) {
             current = current.parentNode;
         }
         let color = seriesModel.getColorFromPalette((current.name || current.dataIndex + ''), paletteScope);
-        if (node.depth > 1 && typeof color === 'string') {
+        if (node.depth > 1 && isString(color)) {
             // Lighter on the deeper level.
             color = lift(color, (node.depth - 1) / (treeHeight - 1) * 0.5);
         }
         return color;
     }
 
-    ecModel.eachSeriesByType('sunburst', function (seriesModel: SunburstSeriesModel) {
+    ecModel.eachSeriesByType(SERIES_TYPE_SUNBURST, function (seriesModel: SunburstSeriesModel) {
         const data = seriesModel.getData();
         const tree = data.tree;
 

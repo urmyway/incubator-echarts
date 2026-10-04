@@ -18,17 +18,25 @@
 */
 
 import * as graphic from '../../util/graphic';
-import { enterEmphasis, leaveEmphasis, enableHoverEmphasis, setStatesStylesFromModel } from '../../util/states';
-import { LayoutOrient, ECElement } from '../../util/types';
-import { PathProps } from 'zrender/src/graphic/Path';
-import SankeySeriesModel, { SankeyEdgeItemOption, SankeyNodeItemOption } from './SankeySeries';
+import { enterEmphasis, leaveEmphasis, toggleHoverEmphasis, setStatesStylesFromModel } from '../../util/states';
+import { LayoutOrient, ECElement, RoamHostView, RoamPayload } from '../../util/types';
+import type { PathProps, PathStyleProps } from 'zrender/src/graphic/Path';
+import SankeySeriesModel, { SankeyEdgeItemOption, SankeyNodeItemOption, SERIES_TYPE_SANKEY } from './SankeySeries';
 import ChartView from '../../view/Chart';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import { RectLike } from 'zrender/src/core/BoundingRect';
 import { setLabelStyle, getLabelStatesModels } from '../../label/labelStyle';
 import { getECData } from '../../util/innerStore';
+import { isString, retrieve3 } from 'zrender/src/core/util';
+import type { GraphEdge } from '../../data/Graph';
+import RoamController from '../../component/helper/RoamController';
+import { applyViewCoordSysTransToElement, VIEW_COORD_SYS_TRANS_OVERALL } from '../../coord/View';
+import {
+    createIsInSelfByPointerCheckerEl,
+    createViewCoordSysSimply, updateRoamControllerSimply
+} from '../../component/helper/roamHelper';
 
 class SankeyPathShape {
     x1 = 0;
@@ -98,21 +106,28 @@ class SankeyPath extends graphic.Path<SankeyPathProps> {
     }
 }
 
-class SankeyView extends ChartView {
+class SankeyView extends ChartView implements RoamHostView {
 
-    static readonly type = 'sankey';
-    readonly type = SankeyView.type;
+    static readonly type = SERIES_TYPE_SANKEY;
+    readonly type = SERIES_TYPE_SANKEY;
 
-    private _model: SankeySeriesModel;
+    private _mainGroup = new graphic.Group();
+    // private _focusAdjacencyDisabled = false;
 
-    private _focusAdjacencyDisabled = false;
+    private _data: SeriesData;
 
-    private _data: List;
+    private _controller: RoamController;
+    private _firstRender: boolean;
+
+    init(ecModel: GlobalModel, api: ExtensionAPI): void {
+        this._controller = new RoamController(api.getZr());
+        this.group.add(this._mainGroup);
+        this._firstRender = true;
+    }
 
     render(seriesModel: SankeySeriesModel, ecModel: GlobalModel, api: ExtensionAPI) {
-        const sankeyView = this;
         const graph = seriesModel.getGraph();
-        const group = this.group;
+        const mainGroup = this._mainGroup;
         const layoutInfo = seriesModel.layoutInfo;
         // view width
         const width = layoutInfo.width;
@@ -122,12 +137,20 @@ class SankeyView extends ChartView {
         const edgeData = seriesModel.getData('edge');
         const orient = seriesModel.get('orient');
 
-        this._model = seriesModel;
+        mainGroup.removeAll();
 
-        group.removeAll();
+        mainGroup.x = layoutInfo.x;
+        mainGroup.y = layoutInfo.y;
 
-        group.x = layoutInfo.x;
-        group.y = layoutInfo.y;
+        this._updateViewCoordSys(seriesModel, api);
+
+        updateRoamControllerSimply(
+            seriesModel,
+            api,
+            this._controller,
+            createIsInSelfByPointerCheckerEl(mainGroup),
+            null,
+        );
 
         // generate a bezire Curve for each edge
         graph.eachEdge(function (edge) {
@@ -194,45 +217,60 @@ class SankeyView extends ChartView {
 
             curve.useStyle(lineStyleModel.getItemStyle());
             // Special color, use source node color or target node color
-            switch (curve.style.fill) {
-                case 'source':
-                    curve.style.fill = edge.node1.getVisual('color');
-                    curve.style.decal = edge.node1.getVisual('style').decal;
-                    break;
-                case 'target':
-                    curve.style.fill = edge.node2.getVisual('color');
-                    curve.style.decal = edge.node2.getVisual('style').decal;
-                    break;
-                case 'gradient':
-                    const sourceColor = edge.node1.getVisual('color');
-                    const targetColor = edge.node2.getVisual('color');
-                    if (typeof sourceColor === 'string' && typeof targetColor === 'string') {
-                        curve.style.fill = new graphic.LinearGradient(0, 0, 1, 0, [{
-                            color: sourceColor,
-                            offset: 0
-                        }, {
-                            color: targetColor,
-                            offset: 1
-                        }]);
-                    }
-            }
+            applyCurveStyle(curve.style, orient, edge);
+
+
+            const defaultEdgeLabelText = `${edgeModel.get('value')}`;
+            const edgeLabelStateModels = getLabelStatesModels(edgeModel, 'edgeLabel');
+
+            setLabelStyle(
+                curve, edgeLabelStateModels,
+                {
+                    labelFetcher: {
+                        getFormattedLabel(dataIndex, stateName, dataType, labelDimIndex, formatter, extendParams) {
+                            return seriesModel.getFormattedLabel(
+                                dataIndex, stateName, 'edge',
+                                labelDimIndex,
+                                // ensure edgeLabel formatter is provided
+                                // to prevent the inheritance from `label.formatter` of the series
+                                retrieve3(
+                                    formatter,
+                                    edgeLabelStateModels.normal && edgeLabelStateModels.normal.get('formatter'),
+                                    defaultEdgeLabelText
+                                ),
+                                extendParams
+                            );
+                        }
+                    },
+                    labelDataIndex: edge.dataIndex,
+                    defaultText: defaultEdgeLabelText
+                }
+            );
+            curve.setTextConfig({ position: 'inside' });
 
             const emphasisModel = edgeModel.getModel('emphasis');
 
-            setStatesStylesFromModel(curve, edgeModel, 'lineStyle', (model) => model.getItemStyle());
+            setStatesStylesFromModel(curve, edgeModel, 'lineStyle', (model) => {
+                const style = model.getItemStyle();
 
-            group.add(curve);
+                applyCurveStyle(style, orient, edge);
+
+                return style;
+            });
+
+            mainGroup.add(curve);
 
             edgeData.setItemGraphicEl(edge.dataIndex, curve);
 
             const focus = emphasisModel.get('focus');
-            enableHoverEmphasis(
+            toggleHoverEmphasis(
                 curve,
-                focus === 'adjacency' ? edge.getAdjacentDataIndices() : focus,
-                emphasisModel.get('blurScope')
+                focus === 'adjacency' ? edge.getAdjacentDataIndices()
+                : focus === 'trajectory' ? edge.getTrajectoryDataIndices()
+                : focus,
+                emphasisModel.get('blurScope'),
+                emphasisModel.get('disabled')
             );
-
-            getECData(curve).dataType = 'edge';
         });
 
         // Generate a rect for each node
@@ -242,13 +280,15 @@ class SankeyView extends ChartView {
             const dragX = itemModel.get('localX');
             const dragY = itemModel.get('localY');
             const emphasisModel = itemModel.getModel('emphasis');
+            const borderRadius = itemModel.get(['itemStyle', 'borderRadius']) as number | number[] || 0;
 
             const rect = new graphic.Rect({
                 shape: {
                     x: dragX != null ? dragX * width : layout.x,
                     y: dragY != null ? dragY * height : layout.y,
                     width: layout.dx,
-                    height: layout.dy
+                    height: layout.dy,
+                    r: borderRadius
                 },
                 style: itemModel.getModel('itemStyle').getItemStyle(),
                 z2: 10
@@ -257,7 +297,11 @@ class SankeyView extends ChartView {
             setLabelStyle(
                 rect, getLabelStatesModels(itemModel),
                 {
-                    labelFetcher: seriesModel,
+                    labelFetcher: {
+                        getFormattedLabel(dataIndex, stateName) {
+                            return seriesModel.getFormattedLabel(dataIndex, stateName, 'node');
+                        }
+                    },
                     labelDataIndex: node.dataIndex,
                     defaultText: node.id
                 }
@@ -270,17 +314,22 @@ class SankeyView extends ChartView {
 
             setStatesStylesFromModel(rect, itemModel);
 
-            group.add(rect);
+            mainGroup.add(rect);
 
             nodeData.setItemGraphicEl(node.dataIndex, rect);
 
             getECData(rect).dataType = 'node';
 
             const focus = emphasisModel.get('focus');
-            enableHoverEmphasis(
+            toggleHoverEmphasis(
                 rect,
-                focus === 'adjacency' ? node.getAdjacentDataIndices() : focus,
-                emphasisModel.get('blurScope')
+                focus === 'adjacency'
+                    ? node.getAdjacentDataIndices()
+                    : focus === 'trajectory'
+                    ? node.getTrajectoryDataIndices()
+                    : focus,
+                emphasisModel.get('blurScope'),
+                emphasisModel.get('disabled')
             );
         });
 
@@ -288,7 +337,7 @@ class SankeyView extends ChartView {
             const itemModel = nodeData.getItemModel<SankeyNodeItemOption>(dataIndex);
             if (itemModel.get('draggable')) {
                 el.drift = function (this: typeof el, dx, dy) {
-                    sankeyView._focusAdjacencyDisabled = true;
+                    // sankeyView._focusAdjacencyDisabled = true;
                     this.shape.x += dx;
                     this.shape.y += dy;
                     this.dirty();
@@ -300,24 +349,90 @@ class SankeyView extends ChartView {
                         localY: this.shape.y / height
                     });
                 };
-                el.ondragend = function () {
-                    sankeyView._focusAdjacencyDisabled = false;
-                };
+                // el.ondragend = function () {
+                //     sankeyView._focusAdjacencyDisabled = false;
+                // };
                 el.draggable = true;
                 el.cursor = 'move';
             }
         });
 
         if (!this._data && seriesModel.isAnimationEnabled()) {
-            group.setClipPath(createGridClipShape(group.getBoundingRect(), seriesModel, function () {
-                group.removeClipPath();
+            mainGroup.setClipPath(createGridClipShape(mainGroup.getBoundingRect(), seriesModel, function () {
+                mainGroup.removeClipPath();
             }));
         }
 
         this._data = seriesModel.getData();
+        this._firstRender = false;
+    }
+
+    __updateOnOwnRoam(
+        payload: RoamPayload,
+        seriesModel: SankeySeriesModel,
+        api: ExtensionAPI
+    ): void {
+        applyViewCoordSysTransToElement(
+            this.group,
+            VIEW_COORD_SYS_TRANS_OVERALL,
+            seriesModel.coordinateSystem,
+            null
+        );
     }
 
     dispose() {
+        this._controller && this._controller.dispose();
+    }
+
+    private _updateViewCoordSys(seriesModel: SankeySeriesModel, api: ExtensionAPI) {
+        const layoutInfo = seriesModel.layoutInfo;
+
+        const ownCoordSys = seriesModel.coordinateSystem = createViewCoordSysSimply(
+            seriesModel,
+            api,
+            layoutInfo.x, layoutInfo.y, layoutInfo.width, layoutInfo.height
+            // 0, 0, layoutInfo.width, layoutInfo.height
+        );
+
+        applyViewCoordSysTransToElement(
+            this.group,
+            VIEW_COORD_SYS_TRANS_OVERALL,
+            ownCoordSys,
+            this._firstRender ? null : seriesModel,
+        );
+    }
+}
+
+/**
+ * Special color, use source node color or target node color
+ * @param curveProps curve's style to parse
+ * @param orient direction
+ * @param edge current curve data
+ */
+function applyCurveStyle(curveProps: PathStyleProps, orient: 'horizontal' | 'vertical', edge: GraphEdge) {
+    switch (curveProps.fill) {
+        case 'source':
+            curveProps.fill = edge.node1.getVisual('color');
+            curveProps.decal = edge.node1.getVisual('style').decal;
+            break;
+        case 'target':
+            curveProps.fill = edge.node2.getVisual('color');
+            curveProps.decal = edge.node2.getVisual('style').decal;
+            break;
+        case 'gradient':
+            const sourceColor = edge.node1.getVisual('color');
+            const targetColor = edge.node2.getVisual('color');
+            if (isString(sourceColor) && isString(targetColor)) {
+                curveProps.fill = new graphic.LinearGradient(
+                    0, 0, +(orient === 'horizontal'), +(orient === 'vertical'), [{
+                        color: sourceColor,
+                        offset: 0
+                    }, {
+                        color: targetColor,
+                        offset: 1
+                    }]
+                );
+            }
     }
 }
 
@@ -328,7 +443,7 @@ function createGridClipShape(rect: RectLike, seriesModel: SankeySeriesModel, cb:
             x: rect.x - 10,
             y: rect.y - 10,
             width: 0,
-            height: rect.height + 20
+            height: rect.height + 20,
         }
     });
     graphic.initProps(rectEl, {

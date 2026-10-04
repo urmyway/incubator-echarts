@@ -19,15 +19,18 @@
 
 import SymbolDraw from '../helper/SymbolDraw';
 import LargeSymbolDraw from '../helper/LargeSymbolDraw';
-
 import pointsLayout from '../../layout/points';
 import ChartView from '../../view/Chart';
 import ScatterSeriesModel from './ScatterSeries';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import { TaskProgressParams } from '../../core/task';
 import type { StageHandlerProgressExecutor } from '../../util/types';
+import Element from 'zrender/src/Element';
+import { getIncrementalId } from '../../util/model';
+import { createCoordSysClipAreaSimply } from '../helper/createClipPathFromCoordSys';
+import { ISymbolDraw, SymbolDrawUpdateOpt } from '../helper/baseDraw';
 
 class ScatterView extends ChartView {
     static readonly type = 'scatter';
@@ -37,20 +40,14 @@ class ScatterView extends ChartView {
 
     _isLargeDraw: boolean;
 
-    _symbolDraw: SymbolDraw | LargeSymbolDraw;
+    _symbolDraw: ISymbolDraw;
 
     render(seriesModel: ScatterSeriesModel, ecModel: GlobalModel, api: ExtensionAPI) {
         const data = seriesModel.getData();
 
         const symbolDraw = this._updateSymbolDraw(data, seriesModel);
 
-        symbolDraw.updateData(data, {
-            // TODO
-            // If this parameter should be a shape or a bounding volume
-            // shape will be more general.
-            // But bounding volume like bounding rect will be much faster in the contain calculation
-            clipShape: this._getClipShape(seriesModel)
-        });
+        symbolDraw.updateData(data, createSymbolDrawOpt(seriesModel));
 
         this._finished = true;
     }
@@ -65,23 +62,24 @@ class ScatterView extends ChartView {
     }
 
     incrementalRender(taskParams: TaskProgressParams, seriesModel: ScatterSeriesModel, ecModel: GlobalModel) {
-        this._symbolDraw.incrementalUpdate(taskParams, seriesModel.getData(), {
-            clipShape: this._getClipShape(seriesModel)
-        });
+        this._symbolDraw.incrementalUpdate(
+            taskParams, seriesModel.getData(), getIncrementalId(seriesModel), createSymbolDrawOpt(seriesModel)
+        );
 
         this._finished = taskParams.end === seriesModel.getData().count();
     }
 
-    updateTransform(seriesModel: ScatterSeriesModel, ecModel: GlobalModel, api: ExtensionAPI): void | { update: true } {
+    /**
+     * See also VIEW_COORD_SYS_ANIMATION
+     */
+    updateTransform(seriesModel: ScatterSeriesModel, ecModel: GlobalModel, api: ExtensionAPI) {
         const data = seriesModel.getData();
         // Must mark group dirty and make sure the incremental layer will be cleared
         // PENDING
         this.group.dirty();
 
-        if (!this._finished || data.count() > 1e4 || !this._symbolDraw.isPersistent()) {
-            return {
-                update: true
-            };
+        if (!this._finished) { // FIXME: _finished checking is unnecessary?
+            return {update: true} as const;
         }
         else {
             const res = pointsLayout('').reset(seriesModel, ecModel, api) as StageHandlerProgressExecutor;
@@ -89,17 +87,15 @@ class ScatterView extends ChartView {
                 res.progress({ start: 0, end: data.count(), count: data.count() }, data);
             }
 
-            this._symbolDraw.updateLayout(data);
+            this._symbolDraw.updateLayout(createSymbolDrawOpt(seriesModel));
         }
     }
 
-    _getClipShape(seriesModel: ScatterSeriesModel) {
-        const coordSys = seriesModel.coordinateSystem;
-        const clipArea = coordSys && coordSys.getArea && coordSys.getArea();
-        return seriesModel.get('clip', true) ? clipArea : null;
+    eachRendered(cb: (el: Element) => boolean | void) {
+        this._symbolDraw && this._symbolDraw.eachRendered(cb);
     }
 
-    _updateSymbolDraw(data: List, seriesModel: ScatterSeriesModel) {
+    _updateSymbolDraw(data: SeriesData, seriesModel: ScatterSeriesModel) {
         let symbolDraw = this._symbolDraw;
         const pipelineContext = seriesModel.pipelineContext;
         const isLargeDraw = pipelineContext.large;
@@ -124,6 +120,16 @@ class ScatterView extends ChartView {
     }
 
     dispose() {}
+}
+
+function createSymbolDrawOpt(seriesModel: ScatterSeriesModel): SymbolDrawUpdateOpt {
+    return {
+        // TODO
+        // If this parameter should be a shape or a bounding volume
+        // shape will be more general.
+        // But bounding volume like bounding rect will be much faster in the contain calculation
+        clipShape: createCoordSysClipAreaSimply(seriesModel)
+    };
 }
 
 export default ScatterView;

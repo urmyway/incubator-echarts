@@ -19,12 +19,13 @@
 
 export {
     linearMap,
-    round,
+    roundLegacy as round,
     asc,
     getPrecision,
     getPrecisionSafe,
     getPixelPrecision,
     getPercentWithPrecision,
+    parsePercent,
     MAX_SAFE_INTEGER,
     remRadian,
     isRadianAroundZero,

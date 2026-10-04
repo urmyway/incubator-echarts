@@ -20,15 +20,18 @@
 import * as graphic from '../../util/graphic';
 import {round} from '../../util/number';
 import SeriesModel from '../../model/Series';
-import { SeriesOption } from '../../util/types';
+import { NullUndefined, SeriesOption } from '../../util/types';
 import type Cartesian2D from '../../coord/cartesian/Cartesian2D';
 import type Polar from '../../coord/polar/Polar';
-import { CoordinateSystem } from '../../coord/CoordinateSystem';
+import { CoordinateSystem, CoordinateSystemClipArea } from '../../coord/CoordinateSystem';
+import { assert, isFunction } from 'zrender/src/core/util';
+import type Element from 'zrender/src/Element';
+
 
 type SeriesModelWithLineWidth = SeriesModel<SeriesOption & {
     lineStyle?: { width?: number }
 }>;
-function createGridClipPath(
+export function createGridClipPath(
     cartesian: Cartesian2D,
     hasAnimation: boolean,
     seriesModel: SeriesModelWithLineWidth,
@@ -42,7 +45,7 @@ function createGridClipPath(
     let width = rect.width;
     let height = rect.height;
 
-    const lineWidth = seriesModel.get(['lineStyle', 'width']) || 2;
+    const lineWidth = seriesModel.get(['lineStyle', 'width']) || 0;
     // Expand the clip path a bit to avoid the border is clipped and looks thinner
     x -= lineWidth / 2;
     y -= lineWidth / 2;
@@ -50,8 +53,12 @@ function createGridClipPath(
     height += lineWidth;
 
     // fix: https://github.com/apache/incubator-echarts/issues/11369
-    x = Math.floor(x);
-    width = Math.round(width);
+    width = Math.ceil(width);
+    if (x !== Math.floor(x)) {
+        x = Math.floor(x);
+        // if no extra 1px on `width`, it will still be clipped since `x` is floored
+        width++;
+    }
 
     const clipPath = new graphic.Rect({
         shape: {
@@ -80,7 +87,7 @@ function createGridClipPath(
             clipPath.shape.height = 0;
         }
 
-        const duringCb = typeof during === 'function'
+        const duringCb = isFunction(during)
             ? (percent: number) => {
                 during(percent, clipPath);
             }
@@ -99,7 +106,7 @@ function createGridClipPath(
     return clipPath;
 }
 
-function createPolarClipPath(
+export function createPolarClipPath(
     polar: Polar,
     hasAnimation: boolean,
     seriesModel: SeriesModelWithLineWidth
@@ -141,7 +148,7 @@ function createPolarClipPath(
     return clipPath;
 }
 
-function createClipPath(
+export function createClipPath(
     coordSys: CoordinateSystem,
     hasAnimation: boolean,
     seriesModel: SeriesModelWithLineWidth,
@@ -160,8 +167,40 @@ function createClipPath(
     return null;
 }
 
-export {
-    createGridClipPath,
-    createPolarClipPath,
-    createClipPath
-};
+export type ShapeClipKind =
+    typeof SHAPE_CLIP_KIND_NOT_CLIPPED
+    | typeof SHAPE_CLIP_KIND_PARTIALLY_CLIPPED
+    | typeof SHAPE_CLIP_KIND_FULLY_CLIPPED;
+export const SHAPE_CLIP_KIND_NOT_CLIPPED = 0;
+export const SHAPE_CLIP_KIND_PARTIALLY_CLIPPED = 1;
+export const SHAPE_CLIP_KIND_FULLY_CLIPPED = 2;
+
+export function updateClipPath(
+    clip: boolean,
+    symbolEl: Element,
+    clipPath: graphic.Path | NullUndefined
+): void {
+    if (clip) {
+        if (__DEV__) {
+            assert(clipPath);
+        }
+        symbolEl.setClipPath(clipPath);
+    }
+    else {
+        symbolEl.removeClipPath();
+    }
+}
+
+export function createCoordSysClipAreaSimply(
+    seriesModel: SeriesModel<SeriesOption & {clip?: boolean}>
+): CoordinateSystemClipArea | NullUndefined {
+    const coordSys = seriesModel.coordinateSystem;
+    if (seriesModel.get('clip', true)
+        && coordSys
+        // The effect would be odd if geo is not clip but series is clipped.
+        && (!coordSys.shouldClip || coordSys.shouldClip())
+    ) {
+        // PENDING make `0.1` configurable, for example, `clipTolerance`?
+        return coordSys.getArea && coordSys.getArea(.1);
+    }
+}

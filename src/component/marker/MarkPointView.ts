@@ -20,7 +20,7 @@
 
 import SymbolDraw from '../../chart/helper/SymbolDraw';
 import * as numberUtil from '../../util/number';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import * as markerHelper from './markerHelper';
 import MarkerView from './MarkerView';
 import { CoordinateSystem } from '../../coord/CoordinateSystem';
@@ -29,28 +29,46 @@ import MarkPointModel, {MarkPointDataItemOption} from './MarkPointModel';
 import GlobalModel from '../../model/Global';
 import MarkerModel from './MarkerModel';
 import ExtensionAPI from '../../core/ExtensionAPI';
-import { HashMap, isFunction, map, defaults, filter, curry } from 'zrender/src/core/util';
+import { HashMap, isFunction, map, filter, curry, extend, retrieve2 } from 'zrender/src/core/util';
 import { getECData } from '../../util/innerStore';
 import { getVisualFromData } from '../../visual/helper';
 import { ZRColor } from '../../util/types';
+import SeriesDimensionDefine from '../../data/SeriesDimensionDefine';
 
 function updateMarkerLayout(
-    mpData: List<MarkPointModel>,
+    mpData: SeriesData<MarkPointModel>,
     seriesModel: SeriesModel,
     api: ExtensionAPI
 ) {
     const coordSys = seriesModel.coordinateSystem;
+    const apiWidth = api.getWidth();
+    const apiHeight = api.getHeight();
+    const coordRect = coordSys && coordSys.getArea && coordSys.getArea();
     mpData.each(function (idx: number) {
         const itemModel = mpData.getItemModel<MarkPointDataItemOption>(idx);
+        const isRelativeToCoordinate = itemModel.get('relativeTo') === 'coordinate';
+        const width = isRelativeToCoordinate
+            ? (coordRect ? coordRect.width : 0)
+            : apiWidth;
+        const height = isRelativeToCoordinate
+            ? (coordRect ? coordRect.height : 0)
+            : apiHeight;
+        const left = isRelativeToCoordinate && coordRect
+            ? coordRect.x
+            : 0;
+        const top = isRelativeToCoordinate && coordRect
+            ? coordRect.y
+            : 0;
+
         let point;
-        const xPx = numberUtil.parsePercent(itemModel.get('x'), api.getWidth());
-        const yPx = numberUtil.parsePercent(itemModel.get('y'), api.getHeight());
+        const xPx = numberUtil.parsePercent(itemModel.get('x'), width) + left;
+        const yPx = numberUtil.parsePercent(itemModel.get('y'), height) + top;
         if (!isNaN(xPx) && !isNaN(yPx)) {
             point = [xPx, yPx];
         }
         // Chart like bar may have there own marker positioning logic
         else if (seriesModel.getMarkerPosition) {
-            // Use the getMarkerPoisition
+            // Use the getMarkerPosition
             point = seriesModel.getMarkerPosition(
                 mpData.getValues(mpData.dimensions, idx)
             );
@@ -59,7 +77,6 @@ function updateMarkerLayout(
             const x = mpData.get(coordSys.dimensions[0], idx);
             const y = mpData.get(coordSys.dimensions[1], idx);
             point = coordSys.dataToPoint([x, y]);
-
         }
 
         // Use x, y if has any
@@ -108,7 +125,7 @@ class MarkPointView extends MarkerView {
         const symbolDraw = symbolDrawMap.get(seriesId)
             || symbolDrawMap.set(seriesId, new SymbolDraw());
 
-        const mpData = createList(coordSys, seriesModel, mpModel);
+        const mpData = createData(coordSys, seriesModel, mpModel);
 
         // FIXME
         mpModel.setData(mpData);
@@ -120,8 +137,11 @@ class MarkPointView extends MarkerView {
             let symbol = itemModel.getShallow('symbol');
             let symbolSize = itemModel.getShallow('symbolSize');
             let symbolRotate = itemModel.getShallow('symbolRotate');
+            let symbolOffset = itemModel.getShallow('symbolOffset');
+            const symbolKeepAspect = itemModel.getShallow('symbolKeepAspect');
 
-            if (isFunction(symbol) || isFunction(symbolSize) || isFunction(symbolRotate)) {
+            // TODO: refactor needed: single data item should not support callback function
+            if (isFunction(symbol) || isFunction(symbolSize) || isFunction(symbolRotate) || isFunction(symbolOffset)) {
                 const rawIdx = mpModel.getRawValue(idx);
                 const dataParams = mpModel.getDataParams(idx);
                 if (isFunction(symbol)) {
@@ -134,18 +154,25 @@ class MarkPointView extends MarkerView {
                 if (isFunction(symbolRotate)) {
                     symbolRotate = symbolRotate(rawIdx, dataParams);
                 }
+                if (isFunction(symbolOffset)) {
+                    symbolOffset = symbolOffset(rawIdx, dataParams);
+                }
             }
 
             const style = itemModel.getModel('itemStyle').getItemStyle();
+            const z2 = itemModel.get('z2');
             const color = getVisualFromData(seriesData, 'color') as ZRColor;
             if (!style.fill) {
                 style.fill = color;
             }
 
             mpData.setItemVisual(idx, {
+                z2: retrieve2(z2, 0),
                 symbol: symbol,
                 symbolSize: symbolSize,
                 symbolRotate: symbolRotate,
+                symbolOffset: symbolOffset,
+                symbolKeepAspect: symbolKeepAspect,
                 style
             });
         });
@@ -168,19 +195,24 @@ class MarkPointView extends MarkerView {
     }
 }
 
-function createList(
+function createData(
     coordSys: CoordinateSystem,
     seriesModel: SeriesModel,
     mpModel: MarkPointModel
 ) {
-    let coordDimsInfos;
+    let coordDimsInfos: SeriesDimensionDefine[];
     if (coordSys) {
         coordDimsInfos = map(coordSys && coordSys.dimensions, function (coordDim) {
-            const info = seriesModel.getData().getDimensionInfo(
-                seriesModel.getData().mapDimension(coordDim)
-            ) || {};
+            const data = seriesModel.getData();
+            const info = data.getDimensionInfo(
+                data.mapDimension(coordDim)
+            ) || {} as SeriesDimensionDefine;
             // In map series data don't have lng and lat dimension. Fallback to same with coordSys
-            return defaults({name: coordDim}, info);
+            return extend(extend({}, info), {
+                name: coordDim,
+                // DON'T use ordinalMeta to parse and collect ordinal.
+                ordinalMeta: null,
+            });
         });
     }
     else {
@@ -190,7 +222,7 @@ function createList(
         }];
     }
 
-    const mpData = new List(coordDimsInfos, mpModel);
+    const mpData = new SeriesData(coordDimsInfos, mpModel);
     let dataOpt = map(mpModel.get('data'), curry(
             markerHelper.dataTransform, seriesModel
         ));
@@ -200,11 +232,8 @@ function createList(
         );
     }
 
-    mpData.initData(dataOpt, null,
-        coordSys ? markerHelper.dimValueGetter : function (item: MarkPointDataItemOption) {
-            return item.value;
-        }
-    );
+    const dimValueGetter = markerHelper.createMarkerDimValueGetter(!!coordSys, coordDimsInfos);
+    mpData.initData(dataOpt, null, dimValueGetter);
 
     return mpData;
 }

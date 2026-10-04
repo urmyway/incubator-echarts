@@ -21,7 +21,7 @@ import Polyline from './Polyline';
 import EffectLine, {ECSymbolOnEffectLine} from './EffectLine';
 import * as vec2 from 'zrender/src/core/vector';
 import { LineDrawSeriesScope } from './LineDraw';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 
 
 class EffectPolyline extends EffectLine {
@@ -33,7 +33,7 @@ class EffectPolyline extends EffectLine {
     private _offsets: number[];
 
     // Override
-    createLine(lineData: List, idx: number, seriesScope: LineDrawSeriesScope) {
+    createLine(lineData: SeriesData, idx: number, seriesScope: LineDrawSeriesScope) {
         return new Polyline(lineData, idx, seriesScope);
     };
 
@@ -67,7 +67,7 @@ class EffectPolyline extends EffectLine {
 
     // Override
     protected _updateSymbolPosition(symbol: ECSymbolOnEffectLine) {
-        const t = symbol.__t;
+        const t = symbol.__t <= 1 ? symbol.__t : 2 - symbol.__t;
         const points = this._points;
         const offsets = this._offsets;
         const len = points.length;
@@ -107,8 +107,8 @@ class EffectPolyline extends EffectLine {
         symbol.x = p0[0] * (1 - p) + p * p1[0];
         symbol.y = p0[1] * (1 - p) + p * p1[1];
 
-        const tx = p1[0] - p0[0];
-        const ty = p1[1] - p0[1];
+        const tx = symbol.__t <= 1 ? p1[0] - p0[0] : p0[0] - p1[0];
+        const ty = symbol.__t <= 1 ? p1[1] - p0[1] : p0[1] - p1[1];
         symbol.rotation = -Math.atan2(ty, tx) - Math.PI / 2;
 
         this._lastFrame = frame;

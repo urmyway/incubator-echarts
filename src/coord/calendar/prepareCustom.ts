@@ -17,8 +17,7 @@
 * under the License.
 */
 
-import Calendar from './Calendar';
-import { OptionDataValueDate } from '../../util/types';
+import type Calendar from './Calendar';
 
 export default function calendarPrepareCustom(coordSys: Calendar) {
     const rect = coordSys.getRect();
@@ -41,8 +40,17 @@ export default function calendarPrepareCustom(coordSys: Calendar) {
             }
         },
         api: {
-            coord: function (data: OptionDataValueDate, clamp?: boolean) {
+            coord: function (
+                data: Parameters<Calendar['dataToPoint']>[0],
+                clamp?: Parameters<Calendar['dataToPoint']>[1]
+            ): ReturnType<Calendar['dataToPoint']> {
                 return coordSys.dataToPoint(data, clamp);
+            },
+            layout: function (
+                data: Parameters<Calendar['dataToLayout']>[0],
+                clamp?: Parameters<Calendar['dataToLayout']>[1]
+            ): ReturnType<Calendar['dataToLayout']> {
+                return coordSys.dataToLayout(data, clamp);
             }
         }
     };

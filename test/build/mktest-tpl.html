@@ -28,13 +28,18 @@ under the License.
         <script src="lib/jquery.min.js"></script>
         <script src="lib/facePrint.js"></script>
         <script src="lib/testHelper.js"></script>
-        <!-- <script src="ut/lib/canteen.js"></script> -->
+        <!-- <script src="lib/canteen.js"></script> -->
+        <!-- <script src="lib/draggable.js"></script> -->
         <link rel="stylesheet" href="lib/reset.css" />
     </head>
     <body>
         <style>
+            html {
+                /* Fix the line-height to integer to avoid it varying across clients and
+                   causing visual test failures. Some clients may not support fractional px. */
+                line-height: 18px;
+            }
         </style>
-
 
 <!-- TPL_DOM_PLACE -->
 
@@ -48,33 +53,34 @@ under the License.
 <!-- TPL_SEGMENT_DELIMITER -->
 
 
-
         <script>
-        require([
-            'echarts',
-            // 'map/js/china',
-            // './data/nutrients.json'
-        ], function (echarts) {
-            var option;
 
-            option = {
-                xAxis: {},
-                yAxis: {},
-                series: {
-                    type: 'line',
-                    data: [[11, 22], [33, 44]]
-                }
-            };
+            require([
+                'echarts',
+                // 'data/flight.json'
+                // 'theme/dark.js', // auto register if load.
+            ], function (echarts /*, data */) {
 
-            var chart = testHelper.create(echarts, '{{TPL_DOM_ID}}', {
-                title: [
-                    'Test Case Description of {{TPL_DOM_ID}}',
-                    '(Muliple lines and **emphasis** are supported in description)'
-                ],
-                option: option
-                // height: 300,
-                // buttons: [{text: 'btn-txt', onclick: function () {}}],
-                // recordCanvas: true,
-            });
-        });
+                var option = {
+                    xAxis: {},
+                    yAxis: {},
+                    series: {
+                        type: 'scatter',
+                        symbolSize: 50,
+                        label: {show: true, position: 'top'},
+                        data: [[1, 2], [100, 200], [500, 50]]
+                    }
+                };
+
+                var chart = testHelper.create(echarts, '{{TPL_DOM_ID}}', {
+                    title: [
+                        'Test Case Description of {{TPL_DOM_ID}}',
+                        '(Multiple lines and **emphasis** are supported in description)'
+                    ],
+                    option: option
+                });
+
+            }); // End of `require`
+
+
         </script>

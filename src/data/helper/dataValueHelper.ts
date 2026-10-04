@@ -17,12 +17,13 @@
 * under the License.
 */
 
-import { ParsedValue, DimensionType } from '../../util/types';
-import OrdinalMeta from '../OrdinalMeta';
+import { ParsedValue, DimensionType, NullUndefined } from '../../util/types';
 import { parseDate, numericToNumber } from '../../util/number';
-import { createHashMap, trim, hasOwn } from 'zrender/src/core/util';
+import { createHashMap, trim, hasOwn, isString, isNumber } from 'zrender/src/core/util';
 import { throwError } from '../../util/log';
 
+
+// --------- START: Parsers --------
 
 /**
  * Convert raw the value in to inner value in List.
@@ -30,7 +31,7 @@ import { throwError } from '../../util/log';
  * [Performance sensitive]
  *
  * [Caution]: this is the key logic of user value parser.
- * For backward compatibiliy, do not modify it until have to!
+ * For backward compatibility, do not modify it until you have to!
  */
 export function parseDataValue(
     value: any,
@@ -40,23 +41,19 @@ export function parseDataValue(
         // will be parsed to NaN if do not set `type` as 'ordinal'. It has been
         // the logic in `List.ts` for long time. Follow the same way if you need
         // to get same result as List did from a raw value.
-        type?: DimensionType,
-        ordinalMeta?: OrdinalMeta
+        type?: DimensionType
     }
 ): ParsedValue {
     // Performance sensitive.
     const dimType = opt && opt.type;
     if (dimType === 'ordinal') {
         // If given value is a category string
-        const ordinalMeta = opt && opt.ordinalMeta;
-        return ordinalMeta
-            ? ordinalMeta.parseAndCollect(value)
-            : value;
+        return value;
     }
 
     if (dimType === 'time'
         // spead up when using timestamp
-        && typeof value !== 'number'
+        && !isNumber(value)
         && value != null
         && value !== '-'
     ) {
@@ -72,7 +69,7 @@ export function parseDataValue(
         ? NaN
         // If string (like '-'), using '+' parse to NaN
         // If object, also parse to NaN
-        : +value;
+        : Number(value);
 };
 
 
@@ -82,7 +79,7 @@ export type RawValueParserType = 'number' | 'time' | 'trim';
 type RawValueParser = (val: unknown) => unknown;
 const valueParserMap = createHashMap<RawValueParser, RawValueParserType>({
     'number': function (val): number {
-        // Do not use `numericToNumber` here. We have by defualt `numericToNumber`.
+        // Do not use `numericToNumber` here. We have `numericToNumber` by default.
         // Here the number parser can have loose rule:
         // enable to cut suffix: "120px" => 120, "14%" => 14.
         return parseFloat(val as string);
@@ -92,7 +89,7 @@ const valueParserMap = createHashMap<RawValueParser, RawValueParserType>({
         return +parseDate(val);
     },
     'trim': function (val) {
-        return typeof val === 'string' ? trim(val) : val;
+        return isString(val) ? trim(val) : val;
     }
 });
 
@@ -100,8 +97,12 @@ export function getRawValueParser(type: RawValueParserType): RawValueParser {
     return valueParserMap.get(type);
 }
 
+// --------- END: Parsers ---------
 
 
+
+// --------- START: Data transformattion filters ---------
+// (comprehensive and performance insensitive)
 
 export interface FilterComparator {
     evaluate(val: unknown): boolean;
@@ -120,7 +121,7 @@ class FilterOrderComparator implements FilterComparator {
     private _rvalFloat: number;
     private _opFn: (lval: unknown, rval: unknown) => boolean;
     constructor(op: OrderRelationOperator, rval: unknown) {
-        if (typeof rval !== 'number') {
+        if (!isNumber(rval)) {
             let errMsg = '';
             if (__DEV__) {
                 errMsg = 'rvalue of "<", ">", "<=", ">=" can only be number in filter.';
@@ -133,7 +134,7 @@ class FilterOrderComparator implements FilterComparator {
     // Performance sensitive.
     evaluate(lval: unknown): boolean {
         // Most cases is 'number', and typeof maybe 10 times faseter than parseFloat.
-        return typeof lval === 'number'
+        return isNumber(lval)
             ? this._opFn(lval, this._rvalFloat)
             : this._opFn(numericToNumber(lval), this._rvalFloat);
     }
@@ -143,10 +144,10 @@ export class SortOrderComparator {
     private _incomparable: number;
     private _resultLT: -1 | 1;
     /**
-     * @param order by defualt: 'asc'
-     * @param incomparable by defualt: Always on the tail.
+     * @param order by default: 'asc'
+     * @param incomparable by default: Always on the tail.
      *        That is, if 'asc' => 'max', if 'desc' => 'min'
-     *        See the definition of "incomparable" in [SORT_COMPARISON_RULE]
+     *        See the definition of "incomparable" in [SORT_COMPARISON_RULE].
      */
     constructor(order: 'asc' | 'desc', incomparable: 'min' | 'max') {
         const isDesc = order === 'desc';
@@ -160,10 +161,8 @@ export class SortOrderComparator {
     // Performance sensitive.
     evaluate(lval: unknown, rval: unknown): -1 | 0 | 1 {
         // Most cases is 'number', and typeof maybe 10 times faseter than parseFloat.
-        const lvalTypeof = typeof lval;
-        const rvalTypeof = typeof rval;
-        let lvalFloat = lvalTypeof === 'number' ? lval : numericToNumber(lval);
-        let rvalFloat = rvalTypeof === 'number' ? rval : numericToNumber(rval);
+        let lvalFloat = isNumber(lval) ? lval : numericToNumber(lval);
+        let rvalFloat = isNumber(rval) ? rval : numericToNumber(rval);
         const lvalNotNumeric = isNaN(lvalFloat as number);
         const rvalNotNumeric = isNaN(rvalFloat as number);
 
@@ -174,13 +173,13 @@ export class SortOrderComparator {
             rvalFloat = this._incomparable;
         }
         if (lvalNotNumeric && rvalNotNumeric) {
-            const lvalIsStr = lvalTypeof === 'string';
-            const rvalIsStr = rvalTypeof === 'string';
+            const lvalIsStr = isString(lval);
+            const rvalIsStr = isString(rval);
             if (lvalIsStr) {
-                lvalFloat = rvalIsStr ? lval : 0;
+                lvalFloat = rvalIsStr ? lval as unknown as number : 0;
             }
             if (rvalIsStr) {
-                rvalFloat = lvalIsStr ? rval : 0;
+                rvalFloat = lvalIsStr ? rval as unknown as number : 0;
             }
         }
 
@@ -242,14 +241,14 @@ export type RelationalOperator = OrderRelationOperator | 'eq' | 'ne';
  * "non-numeric-string" vs "others": "others" is treated as "incomparable".
  * "incomparable" will be seen as -Infinity or Infinity (depends on the settings).
  * MEMO:
- *   non-numeric string sort make sence when need to put the items with the same tag together.
+ *   Non-numeric string sort makes sense when we need to put the items with the same tag together.
  *   But if we support string sort, we still need to avoid the misleading like `'2' > '12'`,
  *   So we treat "numeric-string" sorted by number order rather than string comparison.
  *
  *
  * [CHECK_LIST_OF_THE_RULE_DESIGN]
  * + Do not support string comparison until required. And also need to
- *   void the misleading of "2" > "12".
+ *   avoid the misleading of "2" > "12".
  * + Should avoid the misleading case:
  *   `" 22 " gte "22"` is `true` but `" 22 " eq "22"` is `false`.
  * + JS bad case should be avoided: null <= 0, [] <= 0, ' ' <= 0, ...
@@ -268,3 +267,68 @@ export function createFilterComparator(
         ? new FilterOrderComparator(op as OrderRelationOperator, rval)
         : null;
 }
+
+// --------- END: Data transformattion filters ---------
+
+
+
+// --------- START: Data store sanitization filters ---------
+// (simple and performance sensitive)
+
+// g: greater than, ge: greater equal, l: less than, le: less equal
+export type DataSanitizationFilter = {g?: number; ge?: number; l?: number; le?: number;};
+type DataSanitizationFilterParsed = {key: string; g: number; ge: number; l: number; le: number;};
+
+/**
+ * @usage
+ *  const filterParsed = parseSanitizationFilter(filter);
+ *  for( ... ) {
+ *      const val = ...;
+ *      if (!filter || passesFilter(filterParsed, val)) {
+ *          // normal handling
+ *      }
+ *  }
+ */
+export function parseSanitizationFilter(
+    filter: DataSanitizationFilter | NullUndefined
+): DataSanitizationFilterParsed {
+    let filterKey = '';
+    let filterG = -Infinity;
+    let filterGE = -Infinity;
+    let filterL = Infinity;
+    let filterLE = Infinity;
+    if (filter) {
+        if (filter.g != null) {
+            filterKey += 'G' + filter.g;
+            filterG = filter.g;
+        }
+        if (filter.ge != null) {
+            filterKey += 'GE' + filter.ge;
+            filterGE = filter.ge;
+        }
+        if (filter.l != null) {
+            filterKey += 'L' + filter.l;
+            filterL = filter.l;
+        }
+        if (filter.le != null) {
+            filterKey += 'LE' + filter.le;
+            filterLE = filter.le;
+        }
+    }
+    return {
+        key: filterKey,
+        g: filterG,
+        ge: filterGE,
+        l: filterL,
+        le: filterLE,
+    };
+}
+
+export function passesSanitizationFilter(filterParsed: DataSanitizationFilterParsed, value: number): boolean {
+    return value > filterParsed.g
+        && value >= filterParsed.ge
+        && value < filterParsed.l
+        && value <= filterParsed.le;
+}
+
+// --------- END: Data store sanitization filters ---------

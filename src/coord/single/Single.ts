@@ -23,28 +23,32 @@
 
 import SingleAxis from './SingleAxis';
 import * as axisHelper from '../axisHelper';
-import {getLayoutRect} from '../../util/layout';
-import {each} from 'zrender/src/core/util';
+import {createBoxLayoutReference, getLayoutRect} from '../../util/layout';
 import { CoordinateSystem, CoordinateSystemMaster } from '../CoordinateSystem';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
 import BoundingRect from 'zrender/src/core/BoundingRect';
-import SingleAxisModel from './AxisModel';
+import SingleAxisModel, { COORD_SYS_TYPE_SINGLE } from './AxisModel';
 import { ParsedModelFinder, ParsedModelFinderKnown } from '../../util/model';
 import { ScaleDataValue } from '../../util/types';
+import { scaleCalcNice } from '../axisNiceTicks';
+import {
+    AXIS_EXTENT_INFO_BUILD_FROM_COORD_SYS_UPDATE, scaleRawExtentInfoCreate
+} from '../scaleRawExtentInfo';
 
+export const singleDimensions = ['single'];
 /**
  * Create a single coordinates system.
  */
 class Single implements CoordinateSystem, CoordinateSystemMaster {
 
-    readonly type = 'single';
+    readonly type = COORD_SYS_TYPE_SINGLE;
 
     readonly dimension = 'single';
     /**
      * Add it just for draw tooltip.
      */
-    readonly dimensions = ['single'];
+    readonly dimensions = singleDimensions;
 
     name: string;
 
@@ -70,16 +74,16 @@ class Single implements CoordinateSystem, CoordinateSystemMaster {
 
         const dim = this.dimension;
 
+        const axisType = axisHelper.determineAxisType(axisModel);
         const axis = new SingleAxis(
             dim,
-            axisHelper.createScaleByModel(axisModel),
+            axisHelper.createScaleByModel(axisModel, axisType, true),
             [0, 0],
-            axisModel.get('type'),
+            axisType,
             axisModel.get('position')
         );
 
-        const isCategory = axis.type === 'category';
-        axis.onBand = isCategory && axisModel.get('boundaryGap');
+        axis.onBand = axisHelper.isAxisOnBand(axis.scale, axisModel);
         axis.inverse = axisModel.get('inverse');
         axis.orient = axisModel.get('orient');
 
@@ -93,35 +97,17 @@ class Single implements CoordinateSystem, CoordinateSystemMaster {
      * Update axis scale after data processed
      */
     update(ecModel: GlobalModel, api: ExtensionAPI) {
-        ecModel.eachSeries(function (seriesModel) {
-            if (seriesModel.coordinateSystem === this) {
-                const data = seriesModel.getData();
-                each(data.mapDimensionsAll(this.dimension), function (dim) {
-                    this._axis.scale.unionExtentFromData(data, dim);
-                }, this);
-                axisHelper.niceScaleExtent(this._axis.scale, this._axis.model);
-            }
-        }, this);
+        const axis = this._axis;
+        scaleRawExtentInfoCreate(axis, AXIS_EXTENT_INFO_BUILD_FROM_COORD_SYS_UPDATE);
+        scaleCalcNice(axis);
     }
 
     /**
      * Resize the single coordinate system.
      */
     resize(axisModel: SingleAxisModel, api: ExtensionAPI) {
-        this._rect = getLayoutRect(
-            {
-                left: axisModel.get('left'),
-                top: axisModel.get('top'),
-                right: axisModel.get('right'),
-                bottom: axisModel.get('bottom'),
-                width: axisModel.get('width'),
-                height: axisModel.get('height')
-            },
-            {
-                width: api.getWidth(),
-                height: api.getHeight()
-            }
-        );
+        const refContainer = createBoxLayoutReference(axisModel, api).refContainer;
+        this._rect = getLayoutRect(axisModel.getBoxLayoutParams(), refContainer);
 
         this._adjustAxis();
     }
@@ -137,7 +123,7 @@ class Single implements CoordinateSystem, CoordinateSystemMaster {
 
         const isHorizontal = axis.isHorizontal();
         const extent = isHorizontal ? [0, rect.width] : [0, rect.height];
-        const idx = axis.reverse ? 1 : 0;
+        const idx = axis.inverse ? 1 : 0;
 
         axis.setExtent(extent[idx], extent[1 - idx]);
 
@@ -212,38 +198,44 @@ class Single implements CoordinateSystem, CoordinateSystemMaster {
         }
     }
 
-    pointToData(point: number[]) {
+    pointToData(point: number[], reserved?: null, out?: number[]) {
+        out = out || [];
         const axis = this.getAxis();
-        return [axis.coordToData(axis.toLocalCoord(
+        out[0] = axis.coordToData(axis.toLocalCoord(
             point[axis.orient === 'horizontal' ? 0 : 1]
-        ))];
+        ));
+        return out;
     }
 
     /**
      * Convert the series data to concrete point.
      * Can be [val] | val
      */
-    dataToPoint(val: ScaleDataValue | ScaleDataValue[]) {
+    dataToPoint(val: ScaleDataValue | ScaleDataValue[], reserved?: unknown, out?: number[]) {
         const axis = this.getAxis();
         const rect = this.getRect();
-        const pt = [];
+        out = out || [];
         const idx = axis.orient === 'horizontal' ? 0 : 1;
 
         if (val instanceof Array) {
             val = val[0];
         }
 
-        pt[idx] = axis.toGlobalCoord(axis.dataToCoord(+val));
-        pt[1 - idx] = idx === 0 ? (rect.y + rect.height / 2) : (rect.x + rect.width / 2);
-        return pt;
+        out[idx] = axis.toGlobalCoord(axis.dataToCoord(+val));
+        out[1 - idx] = idx === 0 ? (rect.y + rect.height / 2) : (rect.x + rect.width / 2);
+        return out;
     }
 
-    convertToPixel(ecModel: GlobalModel, finder: ParsedModelFinder, value: ScaleDataValue[]) {
+    convertToPixel(
+        ecModel: GlobalModel, finder: ParsedModelFinder, value: ScaleDataValue[]
+    ) {
         const coordSys = getCoordSys(finder);
         return coordSys === this ? this.dataToPoint(value) : null;
     }
 
-    convertFromPixel(ecModel: GlobalModel, finder: ParsedModelFinder, pixel: number[]) {
+    convertFromPixel(
+        ecModel: GlobalModel, finder: ParsedModelFinder, pixel: number[]
+    ) {
         const coordSys = getCoordSys(finder);
         return coordSys === this ? this.pointToData(pixel) : null;
     }

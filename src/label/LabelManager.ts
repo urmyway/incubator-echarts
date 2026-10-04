@@ -51,8 +51,14 @@ import { makeInner } from '../util/model';
 import { retrieve2, each, keys, isFunction, filter, indexOf } from 'zrender/src/core/util';
 import { PathStyleProps } from 'zrender/src/graphic/Path';
 import Model from '../model/Model';
-import { prepareLayoutList, hideOverlap, shiftLayoutOnX, shiftLayoutOnY } from './labelLayoutHelper';
+import {
+    hideOverlap, shiftLayoutOnXY,
+    restoreIgnore,
+    LabelLayoutWithGeometry,
+    newLabelLayoutWithGeometry,
+} from './labelLayoutHelper';
 import { labelInner, animateLabelValue } from './labelStyle';
+import { normalizeRadian } from 'zrender/src/contain/util';
 
 interface LabelDesc {
     label: ZRText
@@ -64,8 +70,9 @@ interface LabelDesc {
     // Can be null if label doesn't represent any data.
     dataType?: SeriesDataType
 
-    layoutOption: LabelLayoutOptionCallback | LabelLayoutOption
-    computedLayoutOption: LabelLayoutOption
+    layoutOptionOrCb: LabelLayoutOptionCallback | LabelLayoutOption
+    // Computed (cb called) layout option.
+    layoutOption: LabelLayoutOption
 
     hostRect: RectLike
     rect: RectLike
@@ -75,6 +82,15 @@ interface LabelDesc {
     defaultAttr: SavedLabelAttr
 }
 
+/**
+ * Save the original value determined in a pass of echarts main process. That refers to the values
+ * rendered by `SeriesView`, before `series:layoutlabels` is triggered in `renderSeries`.
+ *
+ * 'series:layoutlabels' may be triggered during some EC_PARTIAL_UPDATE passes, such as zooming in series.graph/geo
+ * (`updateLabelLayout`), where the modified `Element` props should be restorable by the original value here.
+ *
+ * Regarding `Element` state, simply consider the values here as the normal state values.
+ */
 interface SavedLabelAttr {
     ignore: boolean
     labelGuideIgnore: boolean
@@ -198,7 +214,7 @@ class LabelManager {
         dataType: SeriesDataType | null | undefined,
         seriesModel: SeriesModel,
         label: ZRText,
-        layoutOption: LabelDesc['layoutOption']
+        layoutOptionOrCb: LabelDesc['layoutOptionOrCb']
     ) {
         const labelStyle = label.style;
         const hostEl = label.__hostTarget;
@@ -219,6 +235,8 @@ class LabelManager {
             dummyTransformable.scaleX = dummyTransformable.scaleY = 1;
         }
 
+        dummyTransformable.rotation = normalizeRadian(dummyTransformable.rotation);
+
         const host = label.__hostTarget;
         let hostRect;
         if (host) {
@@ -237,8 +255,8 @@ class LabelManager {
             dataIndex,
             dataType,
 
-            layoutOption,
-            computedLayoutOption: null,
+            layoutOptionOrCb,
+            layoutOption: null,
 
             rect: labelRect,
 
@@ -325,17 +343,17 @@ class LabelManager {
             const defaultLabelAttr = labelItem.defaultAttr;
             let layoutOption;
             // TODO A global layout option?
-            if (typeof labelItem.layoutOption === 'function') {
-                layoutOption = labelItem.layoutOption(
+            if (isFunction(labelItem.layoutOptionOrCb)) {
+                layoutOption = labelItem.layoutOptionOrCb(
                     prepareLayoutCallbackParams(labelItem, hostEl)
                 );
             }
             else {
-                layoutOption = labelItem.layoutOption;
+                layoutOption = labelItem.layoutOptionOrCb;
             }
 
             layoutOption = layoutOption || {};
-            labelItem.computedLayoutOption = layoutOption;
+            labelItem.layoutOption = layoutOption;
 
             const degreeToRadian = Math.PI / 180;
             // TODO hostEl should always exists.
@@ -425,7 +443,13 @@ class LabelManager {
         const width = api.getWidth();
         const height = api.getHeight();
 
-        const labelList = prepareLayoutList(this._labelList);
+        const labelList: LabelLayoutWithGeometry[] = [];
+        each(this._labelList, inputItem => {
+            if (!inputItem.defaultAttr.ignore) {
+                labelList.push(newLabelLayoutWithGeometry({}, inputItem));
+            }
+        });
+
         const labelsNeedsAdjustOnX = filter(labelList, function (item) {
             return item.layoutOption.moveOverlap === 'shiftX';
         });
@@ -433,13 +457,14 @@ class LabelManager {
             return item.layoutOption.moveOverlap === 'shiftY';
         });
 
-        shiftLayoutOnX(labelsNeedsAdjustOnX, 0, width);
-        shiftLayoutOnY(labelsNeedsAdjustOnY, 0, height);
+        shiftLayoutOnXY(labelsNeedsAdjustOnX, 0, 0, width);
+        shiftLayoutOnXY(labelsNeedsAdjustOnY, 1, 0, height);
 
         const labelsNeedsHideOverlap = filter(labelList, function (item) {
             return item.layoutOption.hideOverlap;
         });
 
+        restoreIgnore(labelsNeedsHideOverlap);
         hideOverlap(labelsNeedsHideOverlap);
     }
 
@@ -453,7 +478,7 @@ class LabelManager {
             const animationEnabled = seriesModel.isAnimationEnabled();
 
             chartView.group.traverse((child) => {
-                if (child.ignore) {
+                if (child.ignore && !(child as ECElement).forceLabelAnimation) {
                     return true;    // Stop traverse descendants.
                 }
 
@@ -487,10 +512,11 @@ class LabelManager {
 
             const defaultStyle: PathStyleProps = {};
             const visualStyle = data.getItemVisual(dataIndex, 'style');
-            const visualType = data.getVisual('drawType');
-            // Default to be same with main color
-            defaultStyle.stroke = visualStyle[visualType];
-
+            if (visualStyle) {
+                const visualType = data.getVisual('drawType');
+                // Default to be same with main color
+                defaultStyle.stroke = visualStyle[visualType];
+            }
             const labelLineModel = itemModel.getModel('labelLine');
 
             setLabelLineStyle(el, getLabelLineStatesModels(itemModel), defaultStyle);
@@ -504,10 +530,13 @@ class LabelManager {
         const guideLine = el.getTextGuideLine();
         // Animate
         if (textEl
-            && !textEl.ignore
-            && !textEl.invisible
-            && !(el as ECElement).disableLabelAnimation
-            && !isElementRemoved(el)
+            // `forceLabelAnimation` has the highest priority
+            && ((el as ECElement).forceLabelAnimation
+                || !textEl.ignore
+                && !textEl.invisible
+                && !(el as ECElement).disableLabelAnimation
+                && !isElementRemoved(el)
+            )
         ) {
             const layoutStore = labelLayoutInnerStore(textEl);
             const oldLayout = layoutStore.oldLayout;
@@ -589,3 +618,4 @@ class LabelManager {
 
 
 export default LabelManager;
+

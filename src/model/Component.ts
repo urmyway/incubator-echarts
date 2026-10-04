@@ -40,8 +40,10 @@ import {
     ComponentSubType,
     ComponentFullType,
     ComponentLayoutMode,
-    BoxLayoutOptionMixin
+    BoxLayoutOptionMixin,
+    NullUndefined
 } from '../util/types';
+import { CoordinateSystem } from '../coord/CoordinateSystem';
 
 const inner = makeInner<{
     defaultOption: ComponentOption
@@ -50,7 +52,7 @@ const inner = makeInner<{
 
 class ComponentModel<Opt extends ComponentOption = ComponentOption> extends Model<Opt> {
 
-    // [Caution]: Becuase this class or desecendants can be used as `XXX.extend(subProto)`,
+    // [Caution]: Because this class or desecendants can be used as `XXX.extend(subProto)`,
     // the class members must not be initialized in constructor or declaration place.
     // Otherwise there is bad case:
     //   class A {xxx = 1;}
@@ -72,10 +74,10 @@ class ComponentModel<Opt extends ComponentOption = ComponentOption> extends Mode
 
     /**
      * Because simplified concept is probably better, series.name (or component.name)
-     * has been having too many resposibilities:
+     * has been having too many responsibilities:
      * (1) Generating id (which requires name in option should not be modified).
      * (2) As an index to mapping series when merging option or calling API (a name
-     * can refer to more then one components, which is convinient is some case).
+     * can refer to more than one component, which is convenient is some cases).
      * (3) Display.
      * @readOnly But injected
      */
@@ -118,6 +120,11 @@ class ComponentModel<Opt extends ComponentOption = ComponentOption> extends Mode
     // // `CoordinateSystemHostModel` itself.
     // coordinateSystem: CoordinateSystemMaster | CoordinateSystemExecutive;
 
+    // Determine the layout box based on that coordinate system, if specified.
+    // Will be injected.
+    // @see injectCoordinateSystem
+    boxCoordinateSystem?: CoordinateSystem | NullUndefined;
+
     /**
      * Support merge layout params.
      * Only support 'box' now (left/right/top/bottom/width/height).
@@ -132,6 +139,7 @@ class ComponentModel<Opt extends ComponentOption = ComponentOption> extends Mode
     // Injectable properties:
     __viewId: string;
     __requireNewView: boolean;
+
 
     static protoInitialize = (function () {
         const proto = ComponentModel.prototype;
@@ -183,7 +191,9 @@ class ComponentModel<Opt extends ComponentOption = ComponentOption> extends Mode
     /**
      * Called immediately after `init` or `mergeOption` of this instance called.
      */
-    optionUpdated(newCptOption: Opt, isInit: boolean): void {}
+    optionUpdated(newCptOption: Opt, isInit: boolean): void {
+        // MUST NOT do anything here.
+    }
 
     /**
      * [How to declare defaultOption]:
@@ -242,15 +252,17 @@ class ComponentModel<Opt extends ComponentOption = ComponentOption> extends Mode
     getDefaultOption(): Opt {
         const ctor = this.constructor;
 
-        // If using class declaration, it is different to travel super class
-        // in legacy env and auto merge defaultOption. So if using class
-        // declaration, defaultOption should be merged manually.
         if (!isExtendedClass(ctor)) {
-            // When using ts class, defaultOption must be declared as static.
+            // When using ES class declaration, defaultOption must be declared as static.
+            // And manually inherit the defaultOption from its parent class if needed, such as,
+            //  ```ts
+            //  static defaultOption = inheritDefaultOption(ParentModel.defaultOption, {...});
+            //  ```
             return (ctor as any).defaultOption;
         }
 
         // FIXME: remove this approach?
+        // Legacy: auto merge defaultOption from ancestor classes if using ParentClass.extend(subProto)
         const fields = inner(this);
         if (!fields.defaultOption) {
             const optList = [];
@@ -281,7 +293,7 @@ class ComponentModel<Opt extends ComponentOption = ComponentOption> extends Mode
     getReferringComponents(mainType: ComponentMainType, opt: QueryReferringOpt): {
         // Always be array rather than null/undefined, which is convenient to use.
         models: ComponentModel[];
-        // Whether target compoent specified
+        // Whether target component is specified
         specified: boolean;
     } {
         const indexKey = (mainType + 'Index') as keyof Opt;
@@ -300,15 +312,35 @@ class ComponentModel<Opt extends ComponentOption = ComponentOption> extends Mode
 
     getBoxLayoutParams() {
         // Consider itself having box layout configs.
-        const boxLayoutModel = this as Model<ComponentOption & BoxLayoutOptionMixin>;
-        return {
-            left: boxLayoutModel.get('left'),
-            top: boxLayoutModel.get('top'),
-            right: boxLayoutModel.get('right'),
-            bottom: boxLayoutModel.get('bottom'),
-            width: boxLayoutModel.get('width'),
-            height: boxLayoutModel.get('height')
-        };
+        // For backward compatibility, by default do not `ignoreParent`.
+        return layout.getBoxLayoutParams(this as Model<BoxLayoutOptionMixin>, false);
+    }
+
+    /**
+     * If developers don't configure zlevel. We will assign zlevel to series based on the key, if provided.
+     * For example, lines with trail effect is expected to be in an individual zlevel.
+     *
+     * @tutorial [GET_ZLEVEL_KEY_FOR_PROGRESSIVE]
+     * Regarding "progressive rendering", zrender can automatically assign a dedicated "incremental layer"
+     * for `el.incremental` per zlevel. But there is a trade-off:
+     *  - If we do not provide different zlevelKey for different series here, all incremental elements from
+     *    different series will be assigned to one incremental layer, which causes them to cover each other
+     *    in an order depending on progressive steps.
+     *      i.e., seriesA_el1 -covered_by-> seriesB_el1 -covered_by-> seriesC_el1 -> seriesA_el2 -> seriesB_el2 ...
+     *    This order may causes an unexpected visual result: series with small data are likely to be completely
+     *    covered by series with large data. (like in test/scatter-weibo.html)
+     *  - If we assign a different zlevelKey to each series, the "covering issue" above can be resolved,
+     *    but having one HTML Canvas per series may be excessively memory-consuming.
+     *  Therefore, we only automatically assign zlevelKey on `ScatterSeries` and `LinesSeries` for backward
+     *  compatibility, and not to other series. Users can explicitly assign zlevel if they encouter above
+     *  "covering issue".
+     */
+    getZLevelKey(): string {
+        return '';
+    }
+
+    setZLevel(zlevel: number) {
+        this.option.zlevel = zlevel;
     }
 
     // // Interfaces for component / series with select ability.

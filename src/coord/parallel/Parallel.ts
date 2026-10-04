@@ -23,29 +23,26 @@
  * <https://en.wikipedia.org/wiki/Parallel_coordinates>
  */
 
-import * as zrUtil from 'zrender/src/core/util';
+import {each, createHashMap, clone} from 'zrender/src/core/util';
 import * as matrix from 'zrender/src/core/matrix';
 import * as layoutUtil from '../../util/layout';
 import * as axisHelper from '../../coord/axisHelper';
 import ParallelAxis from './ParallelAxis';
 import * as graphic from '../../util/graphic';
-import * as numberUtil from '../../util/number';
+import {mathCeil, mathFloor, mathMax, mathMin, mathPI, round} from '../../util/number';
 import sliderMove from '../../component/helper/sliderMove';
-import ParallelModel, { ParallelLayoutDirection } from './ParallelModel';
+import ParallelModel, { COORD_SYS_TYPE_PARALLEL, ParallelLayoutDirection } from './ParallelModel';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
 import { Dictionary, DimensionName, ScaleDataValue } from '../../util/types';
 import { CoordinateSystem, CoordinateSystemMaster } from '../CoordinateSystem';
 import ParallelAxisModel, { ParallelActiveState } from './AxisModel';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
+import { scaleCalcNice } from '../axisNiceTicks';
+import {
+    AXIS_EXTENT_INFO_BUILD_FROM_COORD_SYS_UPDATE, scaleRawExtentInfoCreate
+} from '../scaleRawExtentInfo';
 
-const each = zrUtil.each;
-const mathMin = Math.min;
-const mathMax = Math.max;
-const mathFloor = Math.floor;
-const mathCeil = Math.ceil;
-const round = numberUtil.round;
-const PI = Math.PI;
 
 interface ParallelCoordinateSystemLayoutInfo {
     layout: ParallelLayoutDirection;
@@ -78,12 +75,12 @@ type SlidedAxisExpandBehavior = 'none' | 'slide' | 'jump';
 
 class Parallel implements CoordinateSystemMaster, CoordinateSystem {
 
-    readonly type = 'parallel';
+    readonly type = COORD_SYS_TYPE_PARALLEL;
 
     /**
      * key: dimension
      */
-    private _axesMap = zrUtil.createHashMap<ParallelAxis>();
+    private _axesMap = createHashMap<ParallelAxis>();
 
     /**
      * key: dimension
@@ -122,16 +119,16 @@ class Parallel implements CoordinateSystemMaster, CoordinateSystem {
             const axisIndex = parallelAxisIndex[idx];
             const axisModel = ecModel.getComponent('parallelAxis', axisIndex) as ParallelAxisModel;
 
+            const axisType = axisHelper.determineAxisType(axisModel);
             const axis = this._axesMap.set(dim, new ParallelAxis(
                 dim,
-                axisHelper.createScaleByModel(axisModel),
+                axisHelper.createScaleByModel(axisModel, axisType, false),
                 [0, 0],
-                axisModel.get('type'),
+                axisType,
                 axisIndex
             ));
 
-            const isCategory = axis.type === 'category';
-            axis.onBand = isCategory && axisModel.get('boundaryGap');
+            axis.onBand = axisHelper.isAxisOnBand(axis.scale, axisModel);
             axis.inverse = axisModel.get('inverse');
 
             // Injection
@@ -146,7 +143,11 @@ class Parallel implements CoordinateSystemMaster, CoordinateSystem {
      * Update axis scale after data processed
      */
     update(ecModel: GlobalModel, api: ExtensionAPI): void {
-        this._updateAxesFromSeries(this._model, ecModel);
+        each(this.dimensions, function (dim) {
+            const axis = this._axesMap.get(dim);
+            scaleRawExtentInfoCreate(axis, AXIS_EXTENT_INFO_BUILD_FROM_COORD_SYS_UPDATE);
+            scaleCalcNice(axis);
+        }, this);
     }
 
     containPoint(point: number[]): boolean {
@@ -168,36 +169,11 @@ class Parallel implements CoordinateSystemMaster, CoordinateSystem {
     }
 
     /**
-     * Update properties from series
-     */
-    private _updateAxesFromSeries(parallelModel: ParallelModel, ecModel: GlobalModel): void {
-        ecModel.eachSeries(function (seriesModel) {
-
-            if (!parallelModel.contains(seriesModel, ecModel)) {
-                return;
-            }
-
-            const data = seriesModel.getData();
-
-            each(this.dimensions, function (dim) {
-                const axis = this._axesMap.get(dim);
-                axis.scale.unionExtentFromData(data, data.mapDimension(dim));
-                axisHelper.niceScaleExtent(axis.scale, axis.model);
-            }, this);
-        }, this);
-    }
-
-    /**
      * Resize the parallel coordinate system.
      */
     resize(parallelModel: ParallelModel, api: ExtensionAPI): void {
-        this._rect = layoutUtil.getLayoutRect(
-            parallelModel.getBoxLayoutParams(),
-            {
-                width: api.getWidth(),
-                height: api.getHeight()
-            }
-        );
+        const refContainer = layoutUtil.createBoxLayoutReference(parallelModel, api).refContainer;
+        this._rect = layoutUtil.getLayoutRect(parallelModel.getBoxLayoutParams(), refContainer);
 
         this._layoutAxes();
     }
@@ -301,7 +277,7 @@ class Parallel implements CoordinateSystemMaster, CoordinateSystem {
                 }
             };
             const rotationTable = {
-                horizontal: PI / 2,
+                horizontal: mathPI / 2,
                 vertical: 0
             };
 
@@ -357,7 +333,7 @@ class Parallel implements CoordinateSystemMaster, CoordinateSystem {
      * @param end the next dataIndex of the last dataIndex will be travel.
      */
     eachActiveState(
-        data: List,
+        data: SeriesData,
         callback: (activeState: ParallelActiveState, dataIndex: number) => void,
         start?: number,
         end?: number
@@ -370,7 +346,7 @@ class Parallel implements CoordinateSystemMaster, CoordinateSystem {
         const dataDimensions = [] as DimensionName[];
         const axisModels = [] as ParallelAxisModel[];
 
-        zrUtil.each(dimensions, function (axisDim) {
+        each(dimensions, function (axisDim) {
             dataDimensions.push(data.mapDimension(axisDim));
             axisModels.push(axesMap.get(axisDim).model);
         });
@@ -430,7 +406,7 @@ class Parallel implements CoordinateSystemMaster, CoordinateSystem {
      * Get axis layout.
      */
     getAxisLayout(dim: DimensionName): ParallelAxisLayoutInfo {
-        return zrUtil.clone(this._axesLayout[dim]);
+        return clone(this._axesLayout[dim]);
     }
 
     /**
@@ -451,7 +427,7 @@ class Parallel implements CoordinateSystemMaster, CoordinateSystem {
             return {behavior: 'none', axisExpandWindow: axisExpandWindow};
         }
 
-        // Conver the point from global to expand coordinates.
+        // Convert the point from global to expand coordinates.
         const pointCoord = point[pixelDimIndex] - layoutInfo.layoutBase - layoutInfo.axisExpandWindow0Pos;
 
         // For dragging operation convenience, the window should not be

@@ -35,9 +35,7 @@ import { Payload, Dictionary, ComponentOption, ItemStyleOption } from '../../../
 import Cartesian2D from '../../../coord/cartesian/Cartesian2D';
 import CartesianAxisModel from '../../../coord/cartesian/AxisModel';
 import DataZoomModel from '../../dataZoom/DataZoomModel';
-import {
-    DataZoomPayloadBatchItem, DataZoomAxisDimension
-} from '../../dataZoom/helper';
+import {DataZoomPayloadBatchItem} from '../../dataZoom/helper';
 import {
     ModelFinderObject, ModelFinderIndexQuery, makeInternalComponentId,
     ModelFinderIdQuery, parseFinder, ParsedModelFinderKnown
@@ -45,6 +43,9 @@ import {
 import ToolboxModel from '../ToolboxModel';
 import { registerInternalOptionCreator } from '../../../model/internalComponentCreator';
 import ComponentModel from '../../../model/Component';
+import tokens from '../../../visual/tokens';
+import BoundingRect from 'zrender/src/core/BoundingRect';
+import { getAcceptableTickPrecision, round } from '../../../util/number';
 
 
 const each = zrUtil.each;
@@ -53,6 +54,9 @@ const DATA_ZOOM_ID_BASE = makeInternalComponentId('toolbox-dataZoom_');
 
 const ICON_TYPES = ['zoom', 'back'] as const;
 type IconType = typeof ICON_TYPES[number];
+
+const XY2WH = {x: 'width', y: 'height'} as const;
+
 
 export interface ToolboxDataZoomFeatureOption extends ToolboxFeatureOption {
     type?: IconType[]
@@ -100,13 +104,6 @@ class DataZoomFeature extends ToolboxFeature<ToolboxDataZoomFeatureOption> {
         handlers[type].call(this);
     }
 
-    remove(
-        ecModel: GlobalModel,
-        api: ExtensionAPI
-    ) {
-        this._brushController && this._brushController.unmount();
-    }
-
     dispose(
         ecModel: GlobalModel,
         api: ExtensionAPI
@@ -134,15 +131,18 @@ class DataZoomFeature extends ToolboxFeature<ToolboxDataZoomFeatureOption> {
                 return;
             }
 
+            const coordSysRect = coordSys.master.getRect().clone();
+
             const brushType = area.brushType;
             if (brushType === 'rect') {
-                setBatch('x', coordSys, (coordRange as BrushDimensionMinMax[])[0]);
-                setBatch('y', coordSys, (coordRange as BrushDimensionMinMax[])[1]);
+                setBatch('x', coordSys, coordSysRect, (coordRange as BrushDimensionMinMax[])[0]);
+                setBatch('y', coordSys, coordSysRect, (coordRange as BrushDimensionMinMax[])[1]);
             }
             else {
                 setBatch(
                     ({lineX: 'x', lineY: 'y'} as const)[brushType as 'lineX' | 'lineY'],
                     coordSys,
+                    coordSysRect,
                     coordRange as BrushDimensionMinMax
                 );
             }
@@ -152,29 +152,42 @@ class DataZoomFeature extends ToolboxFeature<ToolboxDataZoomFeatureOption> {
 
         this._dispatchZoomAction(snapshot);
 
-        function setBatch(dimName: DataZoomAxisDimension, coordSys: Cartesian2D, minMax: number[]) {
+        function setBatch(
+            dimName: 'x' | 'y',
+            coordSys: Cartesian2D,
+            coordSysRect: BoundingRect,
+            minMax: number[]
+        ) {
             const axis = coordSys.getAxis(dimName);
             const axisModel = axis.model;
             const dataZoomModel = findDataZoom(dimName, axisModel, ecModel);
 
             // Restrict range.
             const minMaxSpan = dataZoomModel.findRepresentativeAxisProxy(axisModel).getMinMaxSpan();
+            const scaleExtent = axis.scale.getExtent();
             if (minMaxSpan.minValueSpan != null || minMaxSpan.maxValueSpan != null) {
                 minMax = sliderMove(
-                    0, minMax.slice(), axis.scale.getExtent(), 0,
+                    0, minMax.slice(), scaleExtent, 0,
                     minMaxSpan.minValueSpan, minMaxSpan.maxValueSpan
                 );
             }
 
+            // Round for displayable.
+            const precision = getAcceptableTickPrecision(
+                scaleExtent,
+                coordSysRect[XY2WH[dimName]],
+                0.5
+            );
+
             dataZoomModel && (snapshot[dataZoomModel.id] = {
                 dataZoomId: dataZoomModel.id,
-                startValue: minMax[0],
-                endValue: minMax[1]
+                startValue: isFinite(precision) ? round(minMax[0], precision) : minMax[0],
+                endValue: isFinite(precision) ? round(minMax[1], precision) : minMax[1]
             });
         }
 
         function findDataZoom(
-            dimName: DataZoomAxisDimension, axisModel: CartesianAxisModel, ecModel: GlobalModel
+            dimName: 'x' | 'y', axisModel: CartesianAxisModel, ecModel: GlobalModel
         ): DataZoomModel {
             let found;
             ecModel.eachComponent({mainType: 'dataZoom', subType: 'select'}, function (dzModel: DataZoomModel) {
@@ -210,10 +223,10 @@ class DataZoomFeature extends ToolboxFeature<ToolboxDataZoomFeatureOption> {
                 back: 'M22,1.4L9.9,13.5l12.3,12.3 M10.3,13.5H54.9v44.6 H10.3v-26'
             },
             // `zoom`, `back`
-            title: ecModel.getLocale(['toolbox', 'dataZoom', 'title']),
+            title: ecModel.getLocaleModel().get(['toolbox', 'dataZoom', 'title']),
             brushStyle: {
                 borderWidth: 0,
-                color: 'rgba(210,219,238,0.2)'
+                color: tokens.color.backgroundTint
             }
         };
 
@@ -316,10 +329,11 @@ function updateZoomBtnStatus(
 
 registerInternalOptionCreator('dataZoom', function (ecModel: GlobalModel): ComponentOption[] {
     const toolboxModel = ecModel.getComponent('toolbox', 0) as ToolboxModel;
-    if (!toolboxModel) {
+    const featureDataZoomPath = ['feature', 'dataZoom'] as const;
+    if (!toolboxModel || toolboxModel.get(featureDataZoomPath) == null) {
         return;
     }
-    const dzFeatureModel = toolboxModel.getModel(['feature', 'dataZoom'] as any) as ToolboxDataZoomFeatureModel;
+    const dzFeatureModel = toolboxModel.getModel(featureDataZoomPath as any) as ToolboxDataZoomFeatureModel;
     const dzOptions = [] as ComponentOption[];
 
     const finder = makeAxisFinder(dzFeatureModel);

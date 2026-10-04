@@ -43,6 +43,7 @@ import {
     TreeChart,
     TreemapChart,
     GraphChart,
+    ChordChart,
     GaugeChart,
     FunnelChart,
     ParallelChart,
@@ -65,6 +66,7 @@ import {
     SingleAxisComponent,
     ParallelComponent,
     CalendarComponent,
+    MatrixComponent,
     GraphicComponent,
     ToolboxComponent,
     TooltipComponent,
@@ -82,10 +84,19 @@ import {
     VisualMapComponent,
     VisualMapContinuousComponent,
     VisualMapPiecewiseComponent,
+    ThumbnailComponent,
     AriaComponent,
     DatasetComponent,
     TransformComponent
 } from './export/components';
+
+import {
+    UniversalTransition,
+    LabelLayout,
+    AxisBreak,
+    LegacyGridContainLabel,
+    ScatterJitter
+} from './export/features';
 
 
 // -----------------
@@ -122,6 +133,7 @@ use([
     TreeChart,
     TreemapChart,
     GraphChart,
+    ChordChart,
     GaugeChart,
     FunnelChart,
     ParallelChart,
@@ -140,8 +152,6 @@ use([
 // -------------------
 // Coordinate systems
 // -------------------
-
-
 
 // All of the axis modules have been included in the
 // coordinate system module below, do not need to
@@ -196,7 +206,7 @@ use(SingleAxisComponent);
 use(ParallelComponent);
 
 // `calendar` coordinate system. for example,
-// chart.setOptionp({
+// chart.setOption({
 //     calendar: {...},
 //     series: [{
 //         coordinateSystem: 'calendar'
@@ -204,7 +214,14 @@ use(ParallelComponent);
 // );
 use(CalendarComponent);
 
-
+// `matrix` coordinate system. for example,
+// chart.setOption({
+//     matrix: {...},
+//     series: [{
+//         coordinateSystem: 'matrix'
+//     }]
+// );
+use(MatrixComponent);
 
 // ------------------
 // Other components
@@ -290,7 +307,7 @@ use(LegendComponent);
 use(DataZoomComponent);
 
 // `dataZoom` component providing drag, pinch, wheel behaviors
-// inside coodinate system, for example:
+// inside coordinate system, for example:
 // chart.setOption({
 //     dataZoom: {type: 'inside'}
 // });
@@ -317,6 +334,8 @@ use(VisualMapContinuousComponent);
 // });
 use(VisualMapPiecewiseComponent);
 
+use(ThumbnailComponent);
+
 // `aria` component providing aria, for example:
 // chart.setOption({
 //     aria: {...}
@@ -333,3 +352,23 @@ use(AriaComponent);
 use(TransformComponent);
 
 use(DatasetComponent);
+
+// universal transition
+// chart.setOption({
+//     series: {
+//         universalTransition: { enabled: true }
+//     }
+// })
+use(UniversalTransition);
+
+// label layout
+// chart.setOption({
+//     series: {
+//         labelLayout: { hideOverlap: true }
+//     }
+// })
+use(LabelLayout);
+
+use(AxisBreak);
+use(LegacyGridContainLabel);
+use(ScatterJitter);

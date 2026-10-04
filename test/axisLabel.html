@@ -27,7 +27,7 @@ under the License.
         <script src="lib/jquery.min.js"></script>
         <script src="lib/facePrint.js"></script>
         <script src="lib/testHelper.js"></script>
-        <script src="ut/lib/canteen.js"></script>
+        <script src="lib/canteen.js"></script>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="stylesheet" href="lib/reset.css">
     </head>
@@ -43,9 +43,10 @@ under the License.
         <div class="chart" id="main1"></div>
         <div class="chart" id="main2"></div>
         <div class="chart" id="main3"></div>
-        <div class="chart" id="main4"></div>
-
-
+        <div id="main4"></div>
+        <div id="main5"></div>
+        <div id="main6"></div>
+        <div id="main7"></div>
 
         <script>
 
@@ -267,7 +268,7 @@ under the License.
                 option = {
                     backgroundColor: '#eee',
                     title: {
-                        text: 'axisLable.formatter: {value} should be correct'
+                        text: 'axisLabel.formatter: {value} should be correct'
                     },
                     grid: {
                         containLabel: true,
@@ -315,10 +316,6 @@ under the License.
 
         <script>
 
-            var chart;
-            var myChart;
-            var option;
-
             require([
                 'echarts'/*, 'map/js/china' */
             ], function (echarts) {
@@ -326,6 +323,7 @@ under the License.
                 var option = {
                     backgroundColor: '#eee',
                     "xAxis": {
+                        triggerEvent: true,
                         "type": "category",
                         "data": [
                             "2018-10-08",
@@ -333,6 +331,7 @@ under the License.
                         ]
                     },
                     "yAxis": {
+                        triggerEvent: true,
                         "type": "value",
                         "axisLabel": {
                             "color": "red",
@@ -365,15 +364,175 @@ under the License.
                     ]
                 }
 
-                testHelper.create(echarts, 'main4', {
+                var chart = testHelper.create(echarts, 'main4', {
                     title: 'Label of yAxis should be RED, but 0 label does not display',
                     option: option,
                     recordCanvas: true
+                });
+                chart.on('click', function (params) {
+                    console.log(params);
                 });
             });
 
         </script>
 
+        <script>
 
+            require([
+                'echarts'
+            ], function (echarts) {
+                var option = {
+                    backgroundColor: '#eee',
+                    tooltip: {},
+                    xAxis: {
+                        type: 'category',
+                        data: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+                        axisLabel: {
+                            width: 60,
+                            overflow: 'truncate',
+                            interval: 0
+                        },
+                        // triggerEvent: true,
+                        tooltip: {
+                            show: true,
+                            position: 'top',
+                            trigger: 'item',
+                            formatter(p) {
+                                if (p.isTruncated()) {
+                                    return p.name;
+                                }
+                                if (p.tickIndex > 3) {
+                                    return `Oh, it is happy ${p.name}! 😀`;
+                                }
+                            }
+                        }
+                    },
+                    yAxis: {
+                        type: 'value',
+                        axisLabel: {
+                            width: 20,
+                            overflow: 'truncate'
+                        },
+                        // triggerEvent: true,
+                        tooltip: {
+                            show: true,
+                            position: 'left',
+                            trigger: 'item'
+                        }
+                    },
+                    series: [
+                        {
+                            data: [150, 230, 224, 218, 135, 147, 260],
+                            type: 'line'
+                        }
+                    ]
+                };
+                var chart = testHelper.create(echarts, 'main5', {
+                    title: 'Should show tooltip for axis label',
+                    option: option
+                });
+            });
+
+        </script>
+
+        <script>
+            require([
+                'echarts'
+            ], function (echarts) {
+                var option = {
+                    tooltip: {},
+                    backgroundColor: '#eee',
+                    angleAxis: [
+                        {
+                            type: 'category',
+                            polarIndex: 0,
+                            startAngle: 200,
+                            endAngle: 0,
+                            data: ['Category 1', 'Category 2 long text test', 'Category 3'],
+                            axisLabel: {
+                                width: 100,
+                                overflow: 'truncate'
+                            },
+                            tooltip: {
+                                show: true
+                            }
+                        }
+                    ],
+                    radiusAxis: [{
+                        polarIndex: 0,
+                        tooltip: {
+                            show: true
+                        }
+                    }],
+                    polar: [{}],
+                    series: [
+                        {
+                            type: 'bar',
+                            polarIndex: 0,
+                            data: [1, 2, 3],
+                            coordinateSystem: 'polar'
+                        }
+                    ]
+                };
+                var chart = testHelper.create(echarts, 'main6', {
+                    title: 'Should show tooltip for **angleAxis** and **radiusAxis** label',
+                    option: option
+                });
+            });
+        </script>
+
+        <script>
+            require([
+                'echarts'
+            ], function (echarts) {
+                const xValues = [100, 183, 218, 333, 478];
+                const xLabels = xValues.map((x) => x * 5);
+
+                option = {
+                xAxis: {
+                    type: 'value',
+                    axisLine: {
+                    show: true,
+                    onZeroAxisIndex: 1
+                    },
+                    axisTick: {
+                    show: true,
+                    customValues: xValues
+                    },
+                    axisLabel: {
+                    customValues: xValues,
+                    formatter: function (val, index) {
+                        return xLabels[index].toString();
+                    }
+                    }
+                },
+                yAxis: {
+                    type: 'value'
+                },
+                series: [
+                    {
+                    data: [
+                        [100, 160],
+                        [150, 240],
+                        [183, 145],
+                        [200, 234],
+                        [218, 228],
+                        [252, 301],
+                        [300, 145],
+                        [333, 223],
+                        [345, 157],
+                        [478, 270]
+                    ],
+                    type: 'line'
+                    }
+                ]
+                };
+                var chart = testHelper.create(echarts, 'main7', {
+                    title: 'Should be able to use index for custom values of axis label',
+                    option
+                });
+            });
+
+        </script>
     </body>
 </html>

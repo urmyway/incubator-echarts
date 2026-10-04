@@ -17,89 +17,108 @@
 * under the License.
 */
 
-import * as zrUtil from 'zrender/src/core/util';
-import SymbolDraw, { ListForSymbolDraw } from '../helper/SymbolDraw';
+import SymbolDraw from '../helper/SymbolDraw';
 import LineDraw from '../helper/LineDraw';
-import RoamController, { RoamControllerHost } from '../../component/helper/RoamController';
-import * as roamHelper from '../../component/helper/roamHelper';
-import {onIrrelevantElement} from '../../component/helper/cursorHelper';
+import RoamController from '../../component/helper/RoamController';
+import {
+    isRoamPayloadHasZoom,
+    updateRoamControllerSimply,
+} from '../../component/helper/roamHelper';
 import * as graphic from '../../util/graphic';
 import adjustEdge from './adjustEdge';
 import {getNodeGlobalScale} from './graphHelper';
 import ChartView from '../../view/Chart';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
-import GraphSeriesModel, { GraphNodeItemOption, GraphEdgeItemOption } from './GraphSeries';
-import { CoordinateSystem } from '../../coord/CoordinateSystem';
-import View from '../../coord/View';
+import GraphSeriesModel, {
+    GraphNodeItemOption, GraphEdgeItemOption, SERIES_TYPE_GRAPH
+} from './GraphSeries';
+import View, {
+    applyViewCoordSysTransToElement,
+    getOwnRoamViewCoordSys,
+    VIEW_COORD_SYS_TRANS_OVERALL,
+    viewCoordSysCopyOverallMatrix,
+} from '../../coord/View';
 import Symbol from '../helper/Symbol';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import Line from '../helper/Line';
 import { getECData } from '../../util/innerStore';
 
-function isViewCoordSys(coordSys: CoordinateSystem): coordSys is View {
-    return coordSys.type === 'view';
-}
+import { simpleLayoutEdge } from './simpleLayoutHelper';
+import { circularLayout, rotateNodeLabel } from './circularLayoutHelper';
+import { clone, extend } from 'zrender/src/core/util';
+import ECLinePath from '../helper/LinePath';
+import { NullUndefined, RoamHostView, RoamPayload } from '../../util/types';
+import { getThumbnailBridge, ThumbnailBridge } from '../../component/helper/thumbnailBridge';
+import { ListForSymbolDraw } from '../helper/baseDraw';
 
-class GraphView extends ChartView {
 
-    static readonly type = 'graph';
-    readonly type = GraphView.type;
+class GraphView extends ChartView implements RoamHostView {
+
+    static readonly type = SERIES_TYPE_GRAPH;
+    readonly type = SERIES_TYPE_GRAPH;
 
     private _symbolDraw: SymbolDraw;
     private _lineDraw: LineDraw;
 
     private _controller: RoamController;
-    private _controllerHost: RoamControllerHost;
 
     private _firstRender: boolean;
 
     private _model: GraphSeriesModel;
 
+    private _api: ExtensionAPI;
+
     private _layoutTimeout: number;
 
     private _layouting: boolean;
+
+    private _mainGroup: graphic.Group;
+
+    private _active: boolean;
 
     init(ecModel: GlobalModel, api: ExtensionAPI) {
         const symbolDraw = new SymbolDraw();
         const lineDraw = new LineDraw();
         const group = this.group;
-
+        const mainGroup = new graphic.Group();
         this._controller = new RoamController(api.getZr());
-        this._controllerHost = {
-            target: group
-        } as RoamControllerHost;
 
-        group.add(symbolDraw.group);
-        group.add(lineDraw.group);
+        mainGroup.add(symbolDraw.group);
+        mainGroup.add(lineDraw.group);
+        group.add(mainGroup);
 
         this._symbolDraw = symbolDraw;
         this._lineDraw = lineDraw;
+
+        this._mainGroup = mainGroup;
 
         this._firstRender = true;
     }
 
     render(seriesModel: GraphSeriesModel, ecModel: GlobalModel, api: ExtensionAPI) {
-        const coordSys = seriesModel.coordinateSystem;
+        const ownCoordSys = getOwnRoamViewCoordSys(seriesModel);
+        let isForceLayout = false;
 
         this._model = seriesModel;
+        this._api = api;
+        this._active = true;
+        const mainGroup = this._mainGroup;
+
+        const thumbnailInfo = this._getThumbnailInfo();
+        if (thumbnailInfo) {
+            thumbnailInfo.bridge.reset(api);
+        }
 
         const symbolDraw = this._symbolDraw;
         const lineDraw = this._lineDraw;
-
-        const group = this.group;
-
-        if (isViewCoordSys(coordSys)) {
-            const groupNewProp = {
-                x: coordSys.x, y: coordSys.y,
-                scaleX: coordSys.scaleX, scaleY: coordSys.scaleY
-            };
-            if (this._firstRender) {
-                group.attr(groupNewProp);
-            }
-            else {
-                graphic.updateProps(group, groupNewProp, seriesModel);
-            }
+        if (ownCoordSys) {
+            applyViewCoordSysTransToElement(
+                mainGroup,
+                VIEW_COORD_SYS_TRANS_OVERALL,
+                ownCoordSys,
+                this._firstRender ? null : seriesModel,
+            );
         }
         // Fix edge contact point with node
         adjustEdge(seriesModel.getGraph(), getNodeGlobalScale(seriesModel));
@@ -109,35 +128,70 @@ class GraphView extends ChartView {
 
         const edgeData = seriesModel.getEdgeData();
         // TODO: TYPE
-        lineDraw.updateData(edgeData as List);
+        lineDraw.updateData(edgeData as SeriesData);
 
         this._updateNodeAndLinkScale();
 
-        this._updateController(seriesModel, ecModel, api);
+        if (ownCoordSys) {
+            updateRoamControllerSimply(
+                seriesModel,
+                api,
+                this._controller,
+                function (e, x, y) {
+                    return seriesModel.coordinateSystem.containPoint([x, y]);
+                },
+                null,
+            );
+        }
 
         clearTimeout(this._layoutTimeout);
         const forceLayout = seriesModel.forceLayout;
         const layoutAnimation = seriesModel.get(['force', 'layoutAnimation']);
         if (forceLayout) {
-            this._startForceLayoutIteration(forceLayout, layoutAnimation);
+            isForceLayout = true;
+            this._startForceLayoutIteration(forceLayout, api, layoutAnimation);
         }
+
+        const layout = seriesModel.get('layout');
 
         data.graph.eachNode((node) => {
             const idx = node.dataIndex;
             const el = node.getGraphicEl() as Symbol;
             const itemModel = node.getModel<GraphNodeItemOption>();
+
+            if (!el) {
+                return;
+            }
+
             // Update draggable
             el.off('drag').off('dragend');
             const draggable = itemModel.get('draggable');
             if (draggable) {
-                el.on('drag', () => {
-                    if (forceLayout) {
-                        forceLayout.warmUp();
-                        !this._layouting
-                            && this._startForceLayoutIteration(forceLayout, layoutAnimation);
-                        forceLayout.setFixed(idx);
-                        // Write position back to layout
-                        data.setItemLayout(idx, [el.x, el.y]);
+                el.on('drag', (e) => {
+                    switch (layout) {
+                        case 'force':
+                            forceLayout.warmUp();
+                            !this._layouting
+                                && this._startForceLayoutIteration(forceLayout, api, layoutAnimation);
+                            forceLayout.setFixed(idx);
+                            // Write position back to layout
+                            data.setItemLayout(idx, [el.x, el.y]);
+                            break;
+                        case 'circular':
+                            data.setItemLayout(idx, [el.x, el.y]);
+                            // mark node fixed
+                            node.setLayout({ fixed: true }, true);
+                            // recalculate circular layout
+                            circularLayout(seriesModel, 'symbolSize', node, [e.offsetX, e.offsetY]);
+                            this.updateLayout(seriesModel);
+                            break;
+                        case 'none':
+                        default:
+                            data.setItemLayout(idx, [el.x, el.y]);
+                            // update edge
+                            simpleLayoutEdge(seriesModel.getGraph(), seriesModel);
+                            this.updateLayout(seriesModel);
+                            break;
                     }
                 }).on('dragend', () => {
                     if (forceLayout) {
@@ -145,7 +199,7 @@ class GraphView extends ChartView {
                     }
                 });
             }
-            el.setDraggable(draggable && !!forceLayout);
+            el.setDraggable(draggable, !!itemModel.get('cursor'));
 
             const focus = itemModel.get(['emphasis', 'focus']);
 
@@ -157,6 +211,10 @@ class GraphView extends ChartView {
         data.graph.eachEdge(function (edge) {
             const el = edge.getGraphicEl() as Line;
             const focus = edge.getModel<GraphEdgeItemOption>().get(['emphasis', 'focus']);
+
+            if (!el) {
+                return;
+            }
 
             if (focus === 'adjacency') {
                 getECData(el).focus = {
@@ -170,55 +228,36 @@ class GraphView extends ChartView {
             && seriesModel.get(['circular', 'rotateLabel']);
         const cx = data.getLayout('cx');
         const cy = data.getLayout('cy');
-        data.eachItemGraphicEl(function (el: Symbol, idx) {
-            const itemModel = data.getItemModel<GraphNodeItemOption>(idx);
-            let labelRotate = itemModel.get(['label', 'rotate']) || 0;
-            const symbolPath = el.getSymbolPath();
-            if (circularRotateLabel) {
-                const pos = data.getItemLayout(idx);
-                let rad = Math.atan2(pos[1] - cy, pos[0] - cx);
-                if (rad < 0) {
-                    rad = Math.PI * 2 + rad;
-                }
-                const isLeft = pos[0] < cx;
-                if (isLeft) {
-                    rad = rad - Math.PI;
-                }
-                const textPosition = isLeft ? 'left' as const : 'right' as const;
-
-                symbolPath.setTextConfig({
-                    rotation: -rad,
-                    position: textPosition,
-                    origin: 'center'
-                });
-                const emphasisState = symbolPath.ensureState('emphasis');
-                zrUtil.extend(emphasisState.textConfig || (emphasisState.textConfig = {}), {
-                    position: textPosition
-                });
-            }
-            else {
-                symbolPath.setTextConfig({
-                    rotation: labelRotate *= Math.PI / 180
-                });
-            }
+        data.graph.eachNode((node) => {
+            rotateNodeLabel(node, circularRotateLabel, cx, cy);
         });
 
         this._firstRender = false;
+        // Force layout will render thumbnail when layout is finished.
+        if (!isForceLayout) {
+            this._renderThumbnail(seriesModel, api, this._symbolDraw, this._lineDraw);
+        }
     }
 
     dispose() {
+        this.remove();
         this._controller && this._controller.dispose();
-        this._controllerHost = null;
     }
 
-    _startForceLayoutIteration(
+    private _startForceLayoutIteration(
         forceLayout: GraphSeriesModel['forceLayout'],
+        api: ExtensionAPI,
         layoutAnimation?: boolean
     ) {
         const self = this;
+        let firstRendered = false;
         (function step() {
             forceLayout.step(function (stopped) {
                 self.updateLayout(self._model);
+                if (stopped || !firstRendered) {
+                    firstRendered = true;
+                    self._renderThumbnail(self._model, api, self._symbolDraw, self._lineDraw);
+                }
                 (self._layouting = !stopped) && (
                     layoutAnimation
                         ? (self._layoutTimeout = setTimeout(step, 16) as any)
@@ -228,81 +267,165 @@ class GraphView extends ChartView {
         })();
     }
 
-    _updateController(
+    /**
+     * @implements RoamHostView['__updateOnOwnRoam']
+     */
+    __updateOnOwnRoam(
+        payload: RoamPayload,
         seriesModel: GraphSeriesModel,
-        ecModel: GlobalModel,
         api: ExtensionAPI
-    ) {
-        const controller = this._controller;
-        const controllerHost = this._controllerHost;
-        const group = this.group;
-
-        controller.setPointerChecker(function (e, x, y) {
-            const rect = group.getBoundingRect();
-            rect.applyTransform(group.transform);
-            return rect.contain(x, y)
-                && !onIrrelevantElement(e, api, seriesModel);
-        });
-
-        if (!isViewCoordSys(seriesModel.coordinateSystem)) {
-            controller.disable();
+    ): void {
+        const ownCoordSys = getOwnRoamViewCoordSys(seriesModel);
+        if (!this._active || !ownCoordSys) {
             return;
         }
-        controller.enable(seriesModel.get('roam'));
-        controllerHost.zoomLimit = seriesModel.get('scaleLimit');
-        controllerHost.zoom = seriesModel.coordinateSystem.getZoom();
 
-        controller
-            .off('pan')
-            .off('zoom')
-            .on('pan', (e) => {
-                roamHelper.updateViewOnPan(controllerHost, e.dx, e.dy);
-                api.dispatchAction({
-                    seriesId: seriesModel.id,
-                    type: 'graphRoam',
-                    dx: e.dx,
-                    dy: e.dy
-                });
-            })
-            .on('zoom', (e) => {
-                roamHelper.updateViewOnZoom(controllerHost, e.scale, e.originX, e.originY);
-                api.dispatchAction({
-                    seriesId: seriesModel.id,
-                    type: 'graphRoam',
-                    zoom: e.scale,
-                    originX: e.originX,
-                    originY: e.originY
-                });
-                this._updateNodeAndLinkScale();
-                adjustEdge(seriesModel.getGraph(), getNodeGlobalScale(seriesModel));
-                this._lineDraw.updateLayout();
-                // Only update label layout on zoom
-                api.updateLabelLayout();
-            });
+        applyViewCoordSysTransToElement(
+            this._mainGroup,
+            VIEW_COORD_SYS_TRANS_OVERALL,
+            ownCoordSys,
+            null,
+        );
+
+        if (isRoamPayloadHasZoom(payload)) {
+            this._updateNodeAndLinkScale();
+            adjustEdge(seriesModel.getGraph(), getNodeGlobalScale(seriesModel));
+            this._lineDraw.updateLayout();
+            // Only update label layout on zoom
+            api.updateLabelLayout();
+        }
+        this._updateThumbnailWindow();
     }
 
-    _updateNodeAndLinkScale() {
+    private _updateNodeAndLinkScale() {
         const seriesModel = this._model;
         const data = seriesModel.getData();
 
         const nodeScale = getNodeGlobalScale(seriesModel);
 
         data.eachItemGraphicEl(function (el: Symbol, idx) {
-            el.setSymbolScale(nodeScale);
+            el && el.setSymbolScale(nodeScale);
         });
     }
 
     updateLayout(seriesModel: GraphSeriesModel) {
+        if (!this._active) {
+            return;
+        }
+
         adjustEdge(seriesModel.getGraph(), getNodeGlobalScale(seriesModel));
 
         this._symbolDraw.updateLayout();
         this._lineDraw.updateLayout();
     }
 
-    remove(ecModel: GlobalModel, api: ExtensionAPI) {
+    remove() {
+        this._active = false;
+        clearTimeout(this._layoutTimeout);
+        this._layouting = false;
+        this._layoutTimeout = null;
+
         this._symbolDraw && this._symbolDraw.remove();
         this._lineDraw && this._lineDraw.remove();
+        this._controller && this._controller.disable();
+    }
+
+    /**
+     * Get thumbnail data structure only if supported.
+     */
+    private _getThumbnailInfo(): {
+        bridge: ThumbnailBridge
+        coordSys: View
+    } | NullUndefined {
+        const model = this._model;
+        const coordSys = model.coordinateSystem;
+        if (coordSys.type !== 'view') {
+            return;
+        }
+        const bridge = getThumbnailBridge(model);
+        if (!bridge) {
+            return;
+        }
+        return {
+            bridge,
+            coordSys: coordSys as View,
+        };
+    }
+
+    private _updateThumbnailWindow() {
+        const info = this._getThumbnailInfo();
+        if (info) {
+            info.bridge.updateWindow(
+                viewCoordSysCopyOverallMatrix(null, info.coordSys),
+                this._api
+            );
+        }
+    }
+
+    private _renderThumbnail(
+        seriesModel: GraphSeriesModel,
+        api: ExtensionAPI,
+        symbolDraw: SymbolDraw,
+        lineDraw: LineDraw
+    ) {
+        const info = this._getThumbnailInfo();
+        if (!info) {
+            return;
+        }
+
+        const bridgeGroup = new graphic.Group();
+        const symbolNodes = symbolDraw.group.children();
+        const lineNodes = lineDraw.group.children();
+
+        const lineGroup = new graphic.Group();
+        const symbolGroup = new graphic.Group();
+        bridgeGroup.add(symbolGroup);
+        bridgeGroup.add(lineGroup);
+
+        // TODO: reuse elements for performance in large graph?
+        for (let i = 0; i < symbolNodes.length; i++) {
+            const node = symbolNodes[i];
+            const sub = (node as graphic.Group).children()[0];
+            const x = (node as Symbol).x;
+            const y = (node as Symbol).y;
+            const subShape = clone((sub as graphic.Path).shape);
+            const shape = extend(subShape, {
+                width: sub.scaleX,
+                height: sub.scaleY,
+                x: x - sub.scaleX / 2,
+                y: y - sub.scaleY / 2
+            });
+            const style = clone((sub as graphic.Path).style);
+            const subThumbnail = new (sub as any).constructor({
+                shape,
+                style,
+                z2: 151
+            });
+            symbolGroup.add(subThumbnail);
+        }
+
+        for (let i = 0; i < lineNodes.length; i++) {
+            const node = lineNodes[i];
+            const line = (node as graphic.Group).children()[0];
+            const style = clone((line as ECLinePath).style);
+            const shape = clone((line as ECLinePath).shape);
+            const lineThumbnail = new ECLinePath({
+                style,
+                shape,
+                z2: 151
+            });
+            lineGroup.add(lineThumbnail);
+        }
+
+        info.bridge.renderContent({
+            api,
+            roamType: seriesModel.get('roam'),
+            viewportRect: null,
+            group: bridgeGroup,
+            targetTrans: viewCoordSysCopyOverallMatrix(null, info.coordSys),
+        });
     }
 }
 
 export default GraphView;
+

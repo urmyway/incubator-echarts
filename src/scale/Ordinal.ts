@@ -22,32 +22,40 @@
  * http://en.wikipedia.org/wiki/Level_of_measurement
  */
 
-// FIXME only one data
-
 import Scale from './Scale';
 import OrdinalMeta from '../data/OrdinalMeta';
-import List from '../data/List';
-import * as scaleHelper from './helper';
 import {
     OrdinalRawValue,
     OrdinalNumber,
-    DimensionLoose,
     OrdinalSortInfo,
-    OrdinalScaleTick,
-    ScaleTick
+    ScaleTick,
 } from '../util/types';
-import { AxisBaseOption } from '../coord/axisCommonTypes';
-import { isArray, map, isObject } from 'zrender/src/core/util';
+import { CategoryAxisBaseOption } from '../coord/axisCommonTypes';
+import { isArray, map, isObject, isString } from 'zrender/src/core/util';
+import { mathMin, mathRound } from '../util/number';
+import {
+    DecoratedScaleMapperMethods,
+    decorateScaleMapper, enableScaleMapperFreeze, getScaleExtentForTickUnsafe, initBreakOrLinearMapper,
+    ScaleMapper, ScaleMapperGeneric
+} from './scaleMapper';
+import { ordinalScaleCreateTicks } from './helper';
+
 
 type OrdinalScaleSetting = {
-    ordinalMeta?: OrdinalMeta | AxisBaseOption['data'];
-    extent?: [number, number];
+    ordinalMeta?: OrdinalMeta | CategoryAxisBaseOption['data'];
+    extent?: number[];
 };
 
-class OrdinalScale extends Scale<OrdinalScaleSetting> {
+/**
+ * @final NEVER inherit me!
+ */
+interface OrdinalScale extends ScaleMapperGeneric<OrdinalScale> {
+    _mapper: ScaleMapper;
+}
+class OrdinalScale extends Scale<OrdinalScale> {
 
     static type = 'ordinal';
-    readonly type = 'ordinal';
+    readonly type = 'ordinal' as const;
 
     private _ordinalMeta: OrdinalMeta;
 
@@ -93,7 +101,13 @@ class OrdinalScale extends Scale<OrdinalScaleSetting> {
      *     1, // ordinalNumber: 5, yValue: 220
      * ]
      * ```
-     * The index of this array is from `0` to `ordinalMeta.categories.length`.
+     * NOTICE:
+     *  - The index of `_ordinalNumbersByTick` is "tick number", i.e., `tick.value`,
+     *    rather than the index of `scale.getTicks()`. They are not the same when
+     *    `_extent[0]` is delibrately set to be not zero, or `axisTick/axisLabel.interval` > 0.
+     *  - Currently we only support that the index of `_ordinalNumbersByTick` is
+     *    from `0` to `ordinalMeta.categories.length - 1`.
+     *  - `OrdinalNumber` is always from `0` to `ordinalMeta.categories.length - 1`.
      *
      * @see `Ordinal['getRawOrdinalNumber']`
      * @see `OrdinalSortInfo`
@@ -102,7 +116,8 @@ class OrdinalScale extends Scale<OrdinalScaleSetting> {
 
     /**
      * This is the inverted map of `_ordinalNumbersByTick`.
-     * The index of this array is from `0` to `ordinalMeta.categories.length`.
+     * The index is `OrdinalNumber`, which is from `0` to `ordinalMeta.categories.length - 1`.
+     * after `_ticksByOrdinalNumber` is initialized.
      *
      * @see `Ordinal['_ordinalNumbersByTick']`
      * @see `Ordinal['_getTickNumber']`
@@ -111,10 +126,14 @@ class OrdinalScale extends Scale<OrdinalScaleSetting> {
     private _ticksByOrdinalNumber: number[];
 
 
-    constructor(setting?: OrdinalScaleSetting) {
-        super(setting);
+    constructor(setting: OrdinalScaleSetting) {
+        super();
 
-        let ordinalMeta = this.getSetting('ordinalMeta');
+        this.parse = OrdinalScale.parse;
+
+        decorateScaleMapper(this, OrdinalScale.decoratedMethods);
+
+        let ordinalMeta = setting.ordinalMeta;
         // Caution: Should not use instanceof, consider ec-extensions using
         // import approach to get OrdinalMeta class.
         if (!ordinalMeta) {
@@ -126,53 +145,96 @@ class OrdinalScale extends Scale<OrdinalScaleSetting> {
             });
         }
         this._ordinalMeta = ordinalMeta as OrdinalMeta;
-        this._extent = this.getSetting('extent') || [0, ordinalMeta.categories.length - 1];
+
+        // Create an interval LinearScaleMapper, and decorate it.
+        const res = initBreakOrLinearMapper(
+            null,
+            null, // Do not support break in OrdinalScale yet.
+            setting.extent || [0, ordinalMeta.categories.length - 1]
+        );
+        this._mapper = res.mapper;
+
+        enableScaleMapperFreeze(this, res.mapper);
     }
 
-    parse(val: OrdinalRawValue | OrdinalNumber): OrdinalNumber {
-        return typeof val === 'string'
-            ? this._ordinalMeta.getOrdinal(val)
-            // val might be float.
-            : Math.round(val);
-    }
-
-    contain(rank: OrdinalRawValue | OrdinalNumber): boolean {
-        rank = this.parse(rank);
-        return scaleHelper.contain(rank, this._extent)
-            && this._ordinalMeta.categories[rank] != null;
-    }
-
-    /**
-     * Normalize given rank or name to linear [0, 1]
-     * @param val raw ordinal number.
-     * @return normalized value in [0, 1].
-     */
-    normalize(val: OrdinalRawValue | OrdinalNumber): number {
-        val = this._getTickNumber(this.parse(val));
-        return scaleHelper.normalize(val, this._extent);
-    }
-
-    /**
-     * @param val normalized value in [0, 1].
-     * @return raw ordinal number.
-     */
-    scale(val: number): OrdinalNumber {
-        val = Math.round(scaleHelper.scale(val, this._extent));
-        return this.getRawOrdinalNumber(val);
-    }
-
-    getTicks(): OrdinalScaleTick[] {
-        const ticks = [];
-        const extent = this._extent;
-        let rank = extent[0];
-
-        while (rank <= extent[1]) {
-            ticks.push({
-                value: rank
-            });
-            rank++;
+    private static parse(this: OrdinalScale, val: OrdinalRawValue | OrdinalNumber): OrdinalNumber {
+        // Caution: Math.round(null) will return `0` rather than `NaN`
+        if (val == null) {
+            val = NaN;
         }
+        else if (isString(val)) {
+            val = this._ordinalMeta.getOrdinal(val);
+            if (val == null) {
+                val = NaN;
+            }
+        }
+        else {
+            // The val from user input might be float.
+            val = mathRound(val);
+        }
+        return val;
+    }
 
+    static decoratedMethods: DecoratedScaleMapperMethods<OrdinalScale> = {
+
+        needTransform() {
+            return this._mapper.needTransform();
+        },
+
+        contain(this: OrdinalScale, val: OrdinalNumber): boolean {
+            return this._mapper.contain(this._getTickNumber(val))
+                && val >= 0 && val < this._ordinalMeta.categories.length;
+        },
+
+        normalize(this: OrdinalScale, val: OrdinalNumber): number {
+            return this._mapper.normalize(this._getTickNumber(val));
+        },
+
+        scale(this: OrdinalScale, val: number): OrdinalNumber {
+            return this.getRawOrdinalNumber(mathRound(this._mapper.scale(val)));
+        },
+
+        transformIn(val, opt) {
+            return this._mapper.transformIn(this._getTickNumber(val), opt);
+        },
+
+        transformOut(val, opt) {
+            return this.getRawOrdinalNumber(this._mapper.transformOut(val, opt));
+        },
+
+        getExtent() {
+            return this._mapper.getExtent();
+        },
+
+        getExtentUnsafe(kind, depth) {
+            return this._mapper.getExtentUnsafe(kind, depth);
+        },
+
+        /**
+         * NOTICE: OrdinalScale extent should always originates from
+         * `[0, ordinalMeta.categories.length - 1]`, regardless of min/max of `series.data`.
+         * But settings like `xxxAxis.min/max` can still modify the extent.
+         * It is handled by constructor of `ScaleRawExtentInfo`.
+         */
+        setExtent(start, end) {
+            return this._mapper.setExtent(start, end);
+        },
+
+        setExtent2(kind, start, end) {
+            return this._mapper.setExtent2(kind, start, end);
+        },
+
+    };
+
+    /**
+     * PENDING: currently this method is not used.
+     * `makeCategoryTicks` is effectively used.
+     */
+    getTicks(): ScaleTick[] {
+        const ticks: ScaleTick[] = [];
+        ordinalScaleCreateTicks(this, 0, function (tick) {
+            ticks.push(tick);
+        });
         return ticks;
     }
 
@@ -197,9 +259,8 @@ class OrdinalScale extends Scale<OrdinalScaleSetting> {
         // Unnecessary support negative tick in `realtimeSort`.
         let tickNum = 0;
         const allCategoryLen = this._ordinalMeta.categories.length;
-        for (const len = Math.min(allCategoryLen, infoOrdinalNumbers.length); tickNum < len; ++tickNum) {
-            const ordinalNumber = infoOrdinalNumbers[tickNum];
-            ordinalsByTick[tickNum] = ordinalNumber;
+        for (const len = mathMin(allCategoryLen, infoOrdinalNumbers.length); tickNum < len; ++tickNum) {
+            const ordinalNumber = ordinalsByTick[tickNum] = infoOrdinalNumbers[tickNum];
             ticksByOrdinal[ordinalNumber] = tickNum;
         }
         // Handle that `series.data` only covers part of the `axis.category.data`.
@@ -208,7 +269,7 @@ class OrdinalScale extends Scale<OrdinalScaleSetting> {
             while (ticksByOrdinal[unusedOrdinal] != null) {
                 unusedOrdinal++;
             };
-            ordinalsByTick.push(unusedOrdinal);
+            ordinalsByTick[tickNum] = unusedOrdinal;
             ticksByOrdinal[unusedOrdinal] = tickNum;
         }
     }
@@ -225,8 +286,7 @@ class OrdinalScale extends Scale<OrdinalScaleSetting> {
     /**
      * @usage
      * ```js
-     * const ordinalNumber = ordinalScale.getRawOrdinalNumber(tickVal);
-     *
+     * const ordinalNumber = ordinalScale.getRawOrdinalNumber(tick.value);
      * // case0
      * const rawOrdinalValue = axisModel.getCategories()[ordinalNumber];
      * // case1
@@ -235,15 +295,14 @@ class OrdinalScale extends Scale<OrdinalScaleSetting> {
      * const coord = axis.dataToCoord(ordinalNumber);
      * ```
      *
-     * @param {OrdinalNumber} tickNumber index of display
+     * value may be out of range, e.g., when axis max is larger than `ordinalMeta.categories.length`,
+     * where ordinal numbers are used as tick value directly.
      */
-    getRawOrdinalNumber(tickNumber: number): OrdinalNumber {
+    getRawOrdinalNumber(tickValue: ScaleTick['value']): OrdinalNumber {
         const ordinalNumbersByTick = this._ordinalNumbersByTick;
-        // tickNumber may be out of range, e.g., when axis max is larger than `ordinalMeta.categories.length`.,
-        // where ordinal numbers are used as tick value directly.
-        return (ordinalNumbersByTick && tickNumber >= 0 && tickNumber < ordinalNumbersByTick.length)
-            ? ordinalNumbersByTick[tickNumber]
-            : tickNumber;
+        return (ordinalNumbersByTick && tickValue >= 0 && tickValue < ordinalNumbersByTick.length)
+            ? ordinalNumbersByTick[tickValue]
+            : tickValue;
     }
 
     /**
@@ -252,37 +311,25 @@ class OrdinalScale extends Scale<OrdinalScaleSetting> {
     getLabel(tick: ScaleTick): string {
         if (!this.isBlank()) {
             const ordinalNumber = this.getRawOrdinalNumber(tick.value);
-            const cateogry = this._ordinalMeta.categories[ordinalNumber];
+            const category = this._ordinalMeta.categories[ordinalNumber];
             // Note that if no data, ordinalMeta.categories is an empty array.
             // Return empty if it's not exist.
-            return cateogry == null ? '' : cateogry + '';
+            return category == null ? '' : category + '';
         }
     }
 
-    count(): number {
-        return this._extent[1] - this._extent[0] + 1;
-    }
-
-    unionExtentFromData(data: List, dim: DimensionLoose) {
-        this.unionExtent(data.getApproximateExtent(dim));
-    }
-
     /**
-     * @override
-     * If value is in extent range
+     * NOTICE: This is different from `.getOrdinalMeta().length` when extent
+     * is specified by `xxxAxis.min/max` or by `dataZoom`.
      */
-    isInExtentRange(value: OrdinalNumber): boolean {
-        value = this._getTickNumber(value);
-        return this._extent[0] <= value && this._extent[1] >= value;
+    count(): number {
+        const extent = getScaleExtentForTickUnsafe(this._mapper);
+        return extent[1] - extent[0] + 1;
     }
 
     getOrdinalMeta(): OrdinalMeta {
         return this._ordinalMeta;
     }
-
-    niceTicks() {}
-
-    niceExtent() {}
 
 }
 

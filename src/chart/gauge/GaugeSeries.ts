@@ -17,7 +17,7 @@
 * under the License.
 */
 
-import createListSimply from '../helper/createListSimply';
+import createSeriesDataSimply from '../helper/createSeriesDataSimply';
 import SeriesModel from '../../model/Series';
 import {
     SeriesOption,
@@ -28,10 +28,15 @@ import {
     ItemStyleOption,
     OptionDataValueNumeric,
     StatesOptionMixin,
-    SeriesEncodeOptionMixin
+    SeriesEncodeOptionMixin,
+    DefaultStatesMixinEmphasis,
+    CallbackDataParams,
+    ComponentOnMatrixOptionMixin,
+    ComponentOnCalendarOptionMixin
 } from '../../util/types';
 import GlobalModel from '../../model/Global';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
+import tokens from '../../visual/tokens';
 
 // [percent, color]
 type GaugeColorStop = [number, ColorString];
@@ -43,6 +48,10 @@ interface LabelFormatter {
 interface PointerOption {
     icon?: string
     show?: boolean
+    /**
+     * If pointer shows above title and detail
+     */
+    showAbove?: boolean,
     keepAspect?: boolean
     itemStyle?: ItemStyleOption
     /**
@@ -98,11 +107,15 @@ interface DetailOption extends LabelOption {
     valueAnimation?: boolean
 }
 
-export interface GaugeStateOption {
-    itemStyle?: ItemStyleOption
+interface GaugeStatesMixin {
+    emphasis?: DefaultStatesMixinEmphasis
+}
+export interface GaugeStateOption<TCbParams = never> {
+    itemStyle?: ItemStyleOption<TCbParams>
 }
 
-export interface GaugeDataItemOption extends GaugeStateOption, StatesOptionMixin<GaugeStateOption> {
+export interface GaugeDataItemOption extends GaugeStateOption,
+    StatesOptionMixin<GaugeStateOption<CallbackDataParams>, GaugeStatesMixin> {
     name?: string
     value?: OptionDataValueNumeric
     pointer?: PointerOption
@@ -110,7 +123,9 @@ export interface GaugeDataItemOption extends GaugeStateOption, StatesOptionMixin
     title?: TitleOption
     detail?: DetailOption
 }
-export interface GaugeSeriesOption extends SeriesOption<GaugeStateOption>, GaugeStateOption,
+export interface GaugeSeriesOption extends SeriesOption<GaugeStateOption, GaugeStatesMixin>,
+    GaugeStateOption<CallbackDataParams>,
+    ComponentOnCalendarOptionMixin, ComponentOnMatrixOptionMixin,
     CircleLayoutOptionMixin, SeriesEncodeOptionMixin {
     type?: 'gauge'
 
@@ -132,7 +147,7 @@ export interface GaugeSeriesOption extends SeriesOption<GaugeStateOption>, Gauge
         show?: boolean
         roundCap?: boolean
         lineStyle?: Omit<LineStyleOption, 'color'> & {
-            color: GaugeColorStop[]
+            color?: GaugeColorStop[]
         }
     },
 
@@ -159,8 +174,9 @@ export interface GaugeSeriesOption extends SeriesOption<GaugeStateOption>, Gauge
         lineStyle?: LineStyleOption
     }
 
-    axisLabel?: LabelOption & {
+    axisLabel?: Omit<LabelOption, 'rotate'> & {
         formatter?: LabelFormatter | string
+        rotate?: 'tangential' | 'radial' | number
     }
 
     pointer?: PointerOption
@@ -178,15 +194,15 @@ class GaugeSeriesModel extends SeriesModel<GaugeSeriesOption> {
     type = GaugeSeriesModel.type;
 
     visualStyleAccessPath = 'itemStyle';
-    useColorPaletteOnData = true;
 
-    getInitialData(option: GaugeSeriesOption, ecModel: GlobalModel): List {
-        return createListSimply(this, ['value']);
+    getInitialData(option: GaugeSeriesOption, ecModel: GlobalModel): SeriesData {
+        return createSeriesDataSimply(this, ['value']);
     }
 
     static defaultOption: GaugeSeriesOption = {
-        zlevel: 0,
+        // zlevel: 0,
         z: 2,
+        colorBy: 'data',
         // 默认全局居中
         center: ['50%', '50%'],
         legendHoverLink: true,
@@ -206,7 +222,7 @@ class GaugeSeriesModel extends SeriesModel<GaugeSeriesOption> {
             show: true,
             roundCap: false,
             lineStyle: {       // 属性lineStyle控制线条样式
-                color: [[1, '#E6EBF8']],
+                color: [[1, tokens.color.neutral10]],
                 width: 10
             }
         },
@@ -228,7 +244,7 @@ class GaugeSeriesModel extends SeriesModel<GaugeSeriesOption> {
             distance: 10,
             // 属性lineStyle（详见lineStyle）控制线条样式
             lineStyle: {
-                color: '#63677A',
+                color: tokens.color.axisTick,
                 width: 3,
                 type: 'solid'
             }
@@ -244,7 +260,7 @@ class GaugeSeriesModel extends SeriesModel<GaugeSeriesOption> {
             distance: 10,
             // 属性lineStyle控制线条样式
             lineStyle: {
-                color: '#63677A',
+                color: tokens.color.axisTickMinor,
                 width: 1,
                 type: 'solid'
             }
@@ -253,13 +269,15 @@ class GaugeSeriesModel extends SeriesModel<GaugeSeriesOption> {
             show: true,
             distance: 15,
             // formatter: null,
-            color: '#464646',
-            fontSize: 12
+            color: tokens.color.axisLabel,
+            fontSize: 12,
+            rotate: 0
         },
         pointer: {
             icon: null,
             offsetCenter: [0, 0],
             show: true,
+            showAbove: true,
             length: '60%',
             width: 6,
             keepAspect: false
@@ -272,9 +290,9 @@ class GaugeSeriesModel extends SeriesModel<GaugeSeriesOption> {
             offsetCenter: [0, 0],
             keepAspect: false,
             itemStyle: {
-                color: '#fff',
+                color: tokens.color.neutral00,
                 borderWidth: 0,
-                borderColor: '#5470c6'
+                borderColor: tokens.color.theme[0]
             }
         },
 
@@ -283,15 +301,15 @@ class GaugeSeriesModel extends SeriesModel<GaugeSeriesOption> {
             // x, y，单位px
             offsetCenter: [0, '20%'],
             // 其余属性默认使用全局文本样式，详见TEXTSTYLE
-            color: '#464646',
+            color: tokens.color.secondary,
             fontSize: 16,
             valueAnimation: false
         },
         detail: {
             show: true,
-            backgroundColor: 'rgba(0,0,0,0)',
+            backgroundColor: tokens.color.transparent,
             borderWidth: 0,
-            borderColor: '#ccc',
+            borderColor: tokens.color.neutral40,
             width: 100,
             height: null, // self-adaption
             padding: [5, 10],
@@ -299,7 +317,7 @@ class GaugeSeriesModel extends SeriesModel<GaugeSeriesOption> {
             offsetCenter: [0, '40%'],
             // formatter: null,
             // 其余属性默认使用全局文本样式，详见TEXTSTYLE
-            color: '#464646',
+            color: tokens.color.primary,
             fontSize: 30,
             fontWeight: 'bold',
             lineHeight: 30,

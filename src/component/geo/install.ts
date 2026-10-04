@@ -20,12 +20,24 @@
 import { EChartsExtensionInstallRegisters } from '../../extension';
 import GeoModel from '../../coord/geo/GeoModel';
 import geoCreator from '../../coord/geo/geoCreator';
-import { ActionInfo } from '../../util/types';
+import { ActionInfo, COMPONENT_MAIN_TYPE_SERIES, RoamHostModel, RoamPayload } from '../../util/types';
 import { each } from 'zrender/src/core/util';
 import GlobalModel from '../../model/Global';
-import { updateCenterAndZoom, RoamPaylod } from '../../action/roamHelper';
-import MapSeries from '../../chart/map/MapSeries';
+import MapSeries, { mapSeriesNeedsDrawMap } from '../../chart/map/MapSeries';
 import GeoView from './GeoView';
+import geoSourceManager from '../../coord/geo/geoSourceManager';
+import type ExtensionAPI from '../../core/ExtensionAPI';
+import { makeQueryConditionKindA } from '../../util/model';
+import { ownRoamModelCoordSysUpdateInAction, ownRoamViewUpdateDirectlyInAction } from '../../coord/View';
+
+type RegisterMapParams = Parameters<typeof geoSourceManager.registerMap>;
+function registerMap(
+    mapName: RegisterMapParams[0],
+    geoJson: RegisterMapParams[1],
+    specialAreas?: RegisterMapParams[2]
+) {
+    geoSourceManager.registerMap(mapName, geoJson, specialAreas);
+}
 
 export function install(registers: EChartsExtensionInstallRegisters) {
 
@@ -33,6 +45,9 @@ export function install(registers: EChartsExtensionInstallRegisters) {
 
     registers.registerComponentModel(GeoModel);
     registers.registerComponentView(GeoView);
+
+    registers.registerImpl('registerMap', registerMap);
+    registers.registerImpl('getMap', (mapName: string) => geoSourceManager.getMapForUser(mapName));
 
 
     function makeAction(
@@ -100,36 +115,35 @@ export function install(registers: EChartsExtensionInstallRegisters) {
     registers.registerAction({
         type: 'geoRoam',
         event: 'geoRoam',
-        update: 'updateTransform'
-    }, function (payload: RoamPaylod, ecModel: GlobalModel) {
-        const componentType = payload.componentType || 'series';
+        update: 'updateTransform',
+    }, function (payload: RoamPayload, ecModel: GlobalModel, api: ExtensionAPI) {
+        // `payload.componentType` is supported only for backward compatibility.
+        const mainType = payload.componentType
+            || (
+                (payload.geoId != null || payload.geoName != null || payload.geoIndex != null)
+                ? 'geo' : COMPONENT_MAIN_TYPE_SERIES
+            );
+        const isSeries = mainType === COMPONENT_MAIN_TYPE_SERIES;
+        if (mainType !== 'geo' && !isSeries) {
+            return;
+        }
+        const subType = isSeries ? 'map' : null;
 
         ecModel.eachComponent(
-            { mainType: componentType, query: payload },
-            function (componentModel: GeoModel | MapSeries) {
-                const geo = componentModel.coordinateSystem;
-                if (geo.type !== 'geo') {
+            makeQueryConditionKindA(payload, mainType, subType),
+            function (componentOrSeries: (GeoModel | MapSeries) & RoamHostModel) {
+                if (isSeries
+                    // Only when `needsDrawMap: true`, the `MapSeries` host geo coord sys and call `MapDraw`.
+                    && !mapSeriesNeedsDrawMap(componentOrSeries as MapSeries)
+                ) {
                     return;
                 }
-
-                const res = updateCenterAndZoom(
-                    geo, payload, (componentModel as GeoModel).get('scaleLimit')
+                // Since 'updateTransform' is used, geo model and view update firstly here, and then series
+                // and components laid out on this VIEW_COORD_SYS update in `View['updateTransform']`.
+                ownRoamModelCoordSysUpdateInAction(
+                    payload, componentOrSeries, isSeries ? (componentOrSeries as MapSeries).seriesGroup.r : null
                 );
-
-                componentModel.setCenter
-                    && componentModel.setCenter(res.center);
-
-                componentModel.setZoom
-                    && componentModel.setZoom(res.zoom);
-
-                // All map series with same `map` use the same geo coordinate system
-                // So the center and zoom must be in sync. Include the series not selected by legend
-                if (componentType === 'series') {
-                    each((componentModel as MapSeries).seriesGroup, function (seriesModel) {
-                        seriesModel.setCenter(res.center);
-                        seriesModel.setZoom(res.zoom);
-                    });
-                }
+                ownRoamViewUpdateDirectlyInAction(payload, componentOrSeries, ecModel, api);
             }
         );
     });

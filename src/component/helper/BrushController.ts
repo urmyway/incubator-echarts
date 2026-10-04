@@ -29,13 +29,14 @@ import { ElementEvent } from 'zrender/src/Element';
 import * as matrix from 'zrender/src/core/matrix';
 import Displayable from 'zrender/src/graphic/Displayable';
 import { PathStyleProps } from 'zrender/src/graphic/Path';
+import tokens from '../../visual/tokens';
 
 
 /**
- * BrushController not only used in "brush component",
- * but also used in "tooltip DataZoom", and other possible
- * futher brush behavior related scenarios.
- * So `BrushController` should not depends on "brush component model".
+ * BrushController is not only used in "brush component",
+ * but is also used in "tooltip DataZoom", and other possible
+ * further brush behavior related scenarios.
+ * So `BrushController` should not depend on "brush component model".
  */
 
 
@@ -71,7 +72,9 @@ export interface BrushCoverConfig {
     panelId?: string;
 
     brushMode?: BrushMode;
-    // `brushStyle`, `transformable` is not mandatory, use DEFAULT_BRUSH_OPT by default.
+    // `brushStyle`, `transformable` is not mandatory. When the controller is enabled,
+    // `updateCovers` inherits from the current brush option first, and then falls back
+    // to `DEFAULT_BRUSH_OPT`.
     brushStyle?: Pick<PathStyleProps, BrushStyleKey>;
     transformable?: boolean;
     removeOnClick?: boolean;
@@ -155,8 +158,8 @@ const CURSOR_MAP = {
 const DEFAULT_BRUSH_OPT = {
     brushStyle: {
         lineWidth: 2,
-        stroke: 'rgba(210,219,238,0.3)',
-        fill: '#D2DBEE'
+        stroke: tokens.color.backgroundTint,
+        fill: tokens.color.borderTint
     },
     transformable: true,
     brushMode: 'single',
@@ -186,7 +189,9 @@ export interface BrushControllerEvents {
  *         removeOnClick: boolean
  *     }
  */
-class BrushController extends Eventful<BrushControllerEvents> {
+class BrushController extends Eventful<{
+    [key in keyof BrushControllerEvents]: (params: BrushControllerEvents[key]) => void | undefined
+}> {
 
     readonly group: graphic.Group;
 
@@ -378,8 +383,9 @@ class BrushController extends Eventful<BrushControllerEvents> {
             assert(this._mounted);
         }
 
+        const baseBrushOption = this._brushOption || DEFAULT_BRUSH_OPT;
         coverConfigList = map(coverConfigList, function (coverConfig) {
-            return merge(clone(DEFAULT_BRUSH_OPT), coverConfig, true);
+            return merge(clone(baseBrushOption), coverConfig, true);
         }) as BrushCoverConfig[];
 
         const tmpIdPrefix = '\0-brush-index-';
@@ -408,7 +414,7 @@ class BrushController extends Eventful<BrushControllerEvents> {
         function addOrUpdate(newIndex: number, oldIndex?: number): void {
             const newBrushInternal = coverConfigList[newIndex];
             // Consider setOption in event listener of brushSelect,
-            // where updating cover when creating should be forbiden.
+            // where updating cover when creating should be forbidden.
             if (oldIndex != null && oldCovers[oldIndex] === creatingCover) {
                 newCovers[newIndex] = oldCovers[oldIndex];
             }
@@ -996,7 +1002,7 @@ function handleDragEnd(controller: BrushController, e: ElementEvent) {
         controller._track = [];
         controller._creatingCover = null;
 
-        // trigger event shoule be at final, after procedure will be nested.
+        // trigger event should be at final, after procedure will be nested.
         eventParams && trigger(controller, eventParams);
     }
 }

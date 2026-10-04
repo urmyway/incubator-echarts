@@ -27,16 +27,16 @@
 
 import Group from 'zrender/src/graphic/Group';
 import Element, {ElementEvent, ElementTextConfig} from 'zrender/src/Element';
-import { DataFormatMixin } from '../model/mixin/dataFormat';
-import GlobalModel from '../model/Global';
-import ExtensionAPI from '../core/ExtensionAPI';
-import SeriesModel from '../model/Series';
+import type { DataFormatMixin } from '../model/mixin/dataFormat';
+import type GlobalModel from '../model/Global';
+import type ExtensionAPI from '../core/ExtensionAPI';
+import type SeriesModel from '../model/Series';
 import { createHashMap, HashMap } from 'zrender/src/core/util';
 import { TaskPlanCallbackReturn, TaskProgressParams } from '../core/task';
-import List, {ListDimensionType} from '../data/List';
+import type SeriesData from '../data/SeriesData';
 import { Dictionary, ElementEventName, ImageLike, TextAlign, TextVerticalAlign } from 'zrender/src/core/types';
 import { PatternObject } from 'zrender/src/graphic/Pattern';
-import { TooltipMarker } from './format';
+import type { TooltipMarker } from './format';
 import { AnimationEasing } from 'zrender/src/animation/easing';
 import { LinearGradientObject } from 'zrender/src/graphic/LinearGradient';
 import { RadialGradientObject } from 'zrender/src/graphic/RadialGradient';
@@ -45,9 +45,15 @@ import { TSpanStyleProps } from 'zrender/src/graphic/TSpan';
 import { PathStyleProps } from 'zrender/src/graphic/Path';
 import { ImageStyleProps } from 'zrender/src/graphic/Image';
 import ZRText, { TextStyleProps } from 'zrender/src/graphic/Text';
-import { Source } from '../data/Source';
-import Model from '../model/Model';
-
+import type { Source } from '../data/Source';
+import type Model from '../model/Model';
+import type { DataStoreDimensionType } from '../data/DataStore';
+import type { DimensionUserOuputEncode } from '../data/helper/dimensionHelper';
+import type { PrimaryTimeUnit } from './time';
+import type ChartView from '../view/Chart';
+import type ComponentModel from '../model/Component';
+import type View from '../coord/View';
+import type ComponentView from '../view/Component';
 
 
 // ---------------------------
@@ -57,6 +63,15 @@ import Model from '../model/Model';
 export {Dictionary};
 
 export type RendererType = 'canvas' | 'svg';
+/**
+ * NOTICE: For historical reason, echarts and zrender have not enabled TS config
+ * `strictNullChecks` yet. Therefore, a explicitly declared `NullUndefined` can
+ * indicate a variable can be `null` or `undefined` without more investigation,
+ * but a variable without `NullUndefined` may also be `null` or `undefined`,
+ * which has to be determined by the implementation.
+ */
+export type NullUndefined = null | undefined;
+export const UNDEFINED_STR = 'undefined';
 
 export type LayoutOrient = 'vertical' | 'horizontal';
 export type HorizontalAlign = 'left' | 'center' | 'right';
@@ -84,8 +99,8 @@ export type ZRStyleProps = PathStyleProps | ImageStyleProps | TSpanStyleProps | 
 export type ZRElementEventName = ElementEventName | 'globalout';
 
 // ComponentFullType can be:
-//     'xxx.yyy': means ComponentMainType.ComponentSubType.
-//     'xxx': means ComponentMainType.
+//     'a.b': means ComponentMainType.ComponentSubType.
+//     'a': means ComponentMainType.
 // See `checkClassType` check the restict definition.
 export type ComponentFullType = string;
 export type ComponentMainType = keyof ECUnitOption & string;
@@ -93,13 +108,15 @@ export type ComponentSubType = Exclude<ComponentOption['type'], undefined>;
 /**
  * Use `parseClassType` to parse componentType declaration to componentTypeInfo.
  * For example:
- * componentType declaration: 'xxx.yyy', get componentTypeInfo {main: 'xxx', sub: 'yyy'}.
+ * componentType declaration: 'a.b', get componentTypeInfo {main: 'a', sub: 'b'}.
  * componentType declaration: '', get componentTypeInfo {main: '', sub: ''}.
  */
 export interface ComponentTypeInfo {
     main: ComponentMainType; // Never null/undefined. `''` represents absence.
     sub: ComponentSubType; // Never null/undefined. `''` represents absence.
 }
+
+export const COMPONENT_MAIN_TYPE_SERIES = 'series';
 
 export interface ECElement extends Element {
     highDownSilentOnTouch?: boolean;
@@ -113,21 +130,40 @@ export interface ECElement extends Element {
 
     z2EmphasisLift?: number;
     z2SelectLift?: number;
+
     /**
-     * Force disable animation on any condition
+     * Force enable animation.
+     * This property is useful when an ignored/invisible/removed element
+     * should have label animation, like the case in the bar-racing charts.
+     * `forceLabelAnimation` has higher priority than `disableLabelAnimation`.
+     */
+    forceLabelAnimation?: boolean;
+    /**
+     * Force disable animation.
+     * `forceLabelAnimation` has higher priority than `disableLabelAnimation`.
      */
     disableLabelAnimation?: boolean
     /**
      * Force disable overall layout
      */
     disableLabelLayout?: boolean
+    /**
+     * Force disable morphing
+     */
+    disableMorphing?: boolean
+    /**
+     * Force disable triggering tooltip
+     */
+    tooltipDisabled?: boolean
 }
 
 export interface DataHost {
-    getData(dataType?: SeriesDataType): List;
+    getData(dataType?: SeriesDataType): SeriesData;
 }
 
-export interface DataModel extends Model<unknown>, DataHost, DataFormatMixin {}
+export interface DataModel extends Model<unknown>, DataHost, DataFormatMixin {
+    getDataParams(dataIndex: number, dataType?: SeriesDataType, el?: Element): CallbackDataParams;
+}
     // Pick<DataHost, 'getData'>,
     // Pick<DataFormatMixin, 'getDataParams' | 'formatTooltip'> {}
 
@@ -154,16 +190,29 @@ export interface DownplayPayload extends Payload {
     notBlur?: boolean
 }
 
-// Payload includes override anmation info
+// Payload includes override animation info
 export interface PayloadAnimationPart {
     duration?: number
     easing?: AnimationEasing
     delay?: number
 }
 
+export interface SelectChangedEvent extends ECActionRefinedEvent {
+    type: 'selectchanged'
+    isFromClick: boolean
+    fromAction: 'select' | 'unselect' | 'toggleSelected'
+    fromActionPayload: Payload
+    selected: {
+        seriesIndex: number
+        dataType?: SeriesDataType
+        dataIndex: number[]
+    }[]
+}
+/**
+ * @deprecated Backward compat.
+ */
 export interface SelectChangedPayload extends Payload {
     type: 'selectchanged'
-    escapeConnect: boolean
     isFromClick: boolean
     fromAction: 'select' | 'unselect' | 'toggleSelected'
     fromActionPayload: Payload
@@ -200,8 +249,23 @@ export interface ECActionEvent extends ECEventData {
     componentIndex?: number;
     seriesIndex?: number;
     escapeConnect?: boolean;
-    batch?: ECEventData;
+    batch?: ECEventData[];
 }
+/**
+ * TODO: not applicable in `ECEventProcessor` yet.
+ */
+export interface ECActionRefinedEvent extends ECActionEvent {
+    // event type
+    type: string;
+    // action types.
+    fromAction: string;
+    fromActionPayload: Payload;
+}
+export type ECActionRefinedEventContent<TRefinedEvent extends ECActionRefinedEvent> = Omit<
+    TRefinedEvent,
+    'type' | 'fromAction' | 'fromActionPayload'
+>;
+
 export interface ECEventData {
     // TODO use unknown
     [key: string]: any;
@@ -217,17 +281,67 @@ export interface NormalizedEventQuery {
     otherQuery: EventQueryItem;
 }
 
+/**
+ * The rule of creating "public event" and "event for connect":
+ *  - If `refineEvent` provided,
+ *      `refineEvent` creates the "public event",
+ *      and "event for connect" is created internally by replicating the payload.
+ *      This is because `makeActionFromEvent` requires the content of event to be
+ *      the same as the original payload, while `refineEvent` creates a user-friend
+ *      event that differs from the original payload.
+ *  - Else if `ActionHandler` returns an object,
+ *      it is both the "public event" and the "event for connect".
+ *      (@deprecated, but keep this mechanism for backward compatibility).
+ *  - Else,
+ *      replicate the payload as both the "public event" and "event for connect".
+ */
 export interface ActionInfo {
     // action type
     type: string;
     // If not provided, use the same string of `type`.
     event?: string;
-    // update method
+    // Update method. Can be:
+    //  - `ECUpdateMethodName`
+    //    - e.g., 'update'
+    //  - `ComponentMainType.ComponentSubType:ECUpdateMethodName`: (FIXME: Not a rigorous mechanism!)
+    //    Only call a specified view method directly.
+    //    - e.g., 'series:focusNodeAdjacency': (DANGEROUS!)
+    //      Call `View['focusNodeAdjacency']` method of all series or filtered if payload
+    //      `{xxxId, xxxName, xxxIndex}` is provided.
+    //    - e.g., ':updateAxisPointer': (DANGEROUS!)
+    //      Call `View['updateAxisPointer']` method of all series and components or filtered
+    //      if payload `{xxxId, xxxName, xxxIndex}` is provided.
+    // By default 'update' (i.e., EC_FULL_UPDATE).
     update?: string;
+    // `ActionHandler` is designed to do nothing other than modify models.
+    action?: ActionHandler;
+    // - `refineEvent` is intended to create a user-friend event that differs from the original payload,
+    //  while enabling feature `connect`, and being called at the last step of the "update" procedure
+    //  to ensure the complete update of all models.
+    // - If multiple actions need to share one event name, `refineEvent` must be used.
+    //  e.g., actions 'doxxx' 'undoxxx' 'togglexxx' share one event name 'xxxchanged'.
+    // - The design of refined event should not impose different handling for batch and non-batch on users.
+    refineEvent?: ActionRefineEvent;
+    // When `refineEvent` is provided, still publish the auto generated "event for connect" to users.
+    // Only for backward compatibility, do not use it in future actions and events.
+    publishNonRefinedEvent?: boolean;
+    // Experimental - may change in future; only internal usage is allowed.
+    componentQuery?: boolean;
 }
 export interface ActionHandler {
     (payload: Payload, ecModel: GlobalModel, api: ExtensionAPI): void | ECEventData;
 }
+export interface ActionRefineEvent {
+    // `actionResult` is the return of the `ActionHandler` call, where some data can be carried.
+    // `actionResultBatch` corresponds to both batch payload and non-batch payload.
+    (actionResultBatch: ECEventData[], payload: Payload, ecModel: GlobalModel, api: ExtensionAPI): {
+        eventContent: ECActionRefinedEventContent<ECActionRefinedEvent>
+    }
+}
+export type ActionUpdateComponentQuery = {
+    mainType: ComponentMainType
+    indexList: number[]
+}[];
 
 export interface OptionPreprocessor {
     (option: ECUnitOption, isTheme: boolean): void
@@ -245,18 +359,26 @@ export interface StageHandlerOverallReset {
     (ecModel: GlobalModel, api: ExtensionAPI, payload?: Payload): void
 }
 export interface StageHandler {
+
     /**
-     * Indicate that the task will be piped all series
-     * (`performRawSeries` indicate whether includes filtered series).
+     * Indicate that the "series stage task" will be piped for all series
+     * (filtered series is included iff `performRawSeries: true`).
+     *
+     * OVERALL_STAGE_TASK (See `overallReset`) can not set `createOnAllSeries: true`.
      */
     createOnAllSeries?: boolean;
+
     /**
-     * Indicate that the task will be only piped in the pipeline of this type of series.
-     * (`performRawSeries` indicate whether includes filtered series).
+     * Indicate that the task will only be piped in the pipeline of this type of series.
+     * (filtered series is included iff `performRawSeries: true`).
+     * It is available for both `reset` and `overallReset`.
      */
     seriesType?: string;
+
     /**
-     * Indicate that the task will be only piped in the pipeline of the returned series.
+     * Indicate that the task will only be piped in the pipeline of the returned series.
+     * It is called in EC_PREPARE, before `CoordinateSystem['create']`.
+     * It is available for both `reset` and `overallReset`.
      */
     getTargetSeries?: (ecModel: GlobalModel, api: ExtensionAPI) => HashMap<SeriesModel>;
 
@@ -269,18 +391,55 @@ export interface StageHandler {
      * Called only when this task in a pipeline.
      */
     plan?: StageHandlerPlan;
+
     /**
-     * If `overallReset` specified, an "overall task" will be created.
-     * "overall task" does not belong to a certain pipeline.
-     * They always be "performed" in certain phase (depends on when they declared).
-     * They has "stub"s to connect with pipelines (one stub for one pipeline),
-     * delivering info like "dirty" and "output end".
+     * If `overallReset` is specified, an OVERALL_STAGE_TASK will be created.
+     *
+     * @tutorial [OVERALL_STAGE_TASK]
+     *  An OVERALL_STAGE_TASK resides across multiple pipelines, and is associated with
+     *  pipelines by "stub"s, which deliver messages like "dirty" and "output end".
+     *  OVERALL_STAGE_TASK does not support `progess` method.
+     *
+     * The `overallReset` method is called iff this task is "dirty" (See `Task['dirty']`).
+     * See EC_TASK_DIRTY for a summary of possible `dirty()` calls.
+     *
+     * @see dirtyOnOverallProgress If a OVERALL_STAGE_TASK need to handle series data.
      */
     overallReset?: StageHandlerOverallReset;
+
     /**
-     * Called only when this task in a pipeline, and "dirty".
+     * If `reset` is specified, a SERIES_STAGE_TASK will be created.
+     *
+     * @tutorial [SERIES_STAGE_TASK]
+     *  A SERIES_STAGE_TASK is owned by a pipeline and is specific to a single series.
+     *
+     * The `reset` method is called iff this task is "dirty" (See `Task['dirty']`).
+     * See EC_TASK_DIRTY for a summary of possible `dirty()` calls.
+     *
+     * NOTICE: `dirtyOnOverallProgress: true` cause that the corresponding `overallReset`
+     *  and `reset` of downsteams tasks may also be called in EC_PROGRESSIVE_CYCLE.
+     *  But in this case, `CoordinateSystem#create` and `CoordinateSystem#update` are not called.
+     *  Only lifecycle like `coordsys:aftercreate` can be ensured to be only called in EC_FULL_UPDATE
+     *  of EC_FULL_UPDATE_CYCLE and EC_PARTIAL_UPDATE_CYCLE, but not in EC_PROGRESSIVE_CYCLE and
+     *  EC_APPEND_DATA_CYCLE.
      */
     reset?: StageHandlerReset;
+
+    /**
+     * This is a temporary mechanism primarily for a dataZoom case in `appendData`.
+     *
+     * Ordinarily, `overallReset` is NOT called in progress in the subsequent frames, which is suitable
+     * for most OVERALL_STAGE_TASK, where no series data related operations is performed (e.g., color
+     * palette task).
+     * But some certain OVERALL_STAGE_TASK need to handle series data, where `dirtyOnOverallProgress: true`
+     * is required. It allows all pipelines to be blocked until this stage, thereby no `overallReset` call
+     * being omitted. (See PerformStageTaskOpt['block'] for its meaning.) (e.g., dataZoom task)
+     *
+     * NOTE_IMPL: It will set this OVERALL_STAGE_TASK dirty when the pipeline progress.
+     * Moreover, to avoid calling the OVERALL_STAGE_TASK each frame (too frequent),
+     * it block the pipeline until this stage (via `task.__block`).
+     */
+    dirtyOnOverallProgress?: boolean;
 }
 
 export interface StageHandlerInternal extends StageHandler {
@@ -296,8 +455,8 @@ export interface StageHandlerInternal extends StageHandler {
 
 export type StageHandlerProgressParams = TaskProgressParams;
 export interface StageHandlerProgressExecutor {
-    dataEach?: (data: List, idx: number) => void;
-    progress?: (params: StageHandlerProgressParams, data: List) => void;
+    dataEach?: (data: SeriesData, idx: number) => void;
+    progress?: (params: StageHandlerProgressParams, data: SeriesData) => void;
 }
 export type StageHandlerPlanReturn = TaskPlanCallbackReturn;
 export interface StageHandlerPlan {
@@ -327,9 +486,10 @@ export type TooltipOrderMode = 'valueAsc' | 'valueDesc' | 'seriesAsc' | 'seriesD
 // Data and dimension related types
 // ---------------------------------
 
+// Represents the values in series.data that need to be treated in a non-numeric way.
+// Can be used by axis.type 'category' (i.e. scale.type 'ordinal').
 // Finally the user data will be parsed and stored in `list._storage`.
 // `NaN` represents "no data" (raw data `null`/`undefined`/`NaN`/`'-'`).
-// `Date` will be parsed to timestamp.
 // Ordinal/category data will be parsed to its index if possible, otherwise
 // keep its original string in list._storage.
 // Check `convertValue` for more details.
@@ -337,12 +497,20 @@ export type OrdinalRawValue = string | number;
 export type OrdinalNumber = number; // The number mapped from each OrdinalRawValue.
 
 /**
- * @usage For example,
- * ```js
- * { ordinalNumbers: [2, 5, 3, 4] }
- * ```
- * means that ordinal 2 should be diplayed on tick 0,
- * ordinal 5 should be displayed on tick 1, ...
+ * @usage
+ * For example,
+ *  ```js
+ *  { ordinalNumbers: [2, 5, 3, 4] }
+ *  ```
+ *  means that "ordinal number" 2 should be displayed on `tick.value` 0,
+ *  "ordinal number" 5 should be displayed on `tick.value` 1, ...
+ * NOTICE:
+ *  - The index/key of `ordinalNumbers` is "tick.value" rather than the index of
+ *    `scale.getTicks()`. They are differnet when `axis.min` is set to be not zero,
+ *    or `axisTick/axisLabel.interval > 0`.
+ *  - The value of `ordinalNumbers` must be a valid `OrdinalNumber`;
+ *    null/undefined is not supported.
+ *  - `OrdinalNumber` is always from `0` to `ordinalMeta.categories.length - 1`.
  */
 export type OrdinalSortInfo = {
     ordinalNumbers: OrdinalNumber[];
@@ -351,56 +519,178 @@ export type OrdinalSortInfo = {
 /**
  * `OptionDataValue` is the primitive value in `series.data` or `dataset.source`.
  * `OptionDataValue` are parsed (see `src/data/helper/dataValueHelper.parseDataValue`)
- * into `ParsedValue` and stored into `data/List` storage.
+ * into `ParsedValue` and stored into `data/SeriesData` storage.
  * Note:
- * (1) The term "parse" does not mean `src/scale/Scale['parse']`.
+ * (1) The term "parse" does not mean `src/scale/Scale['parse']`(@see `ScaleDataValue`).
  * (2) If a category dimension is not mapped to any axis, its raw value will NOT be
- * parsed to `OrdinalNumber` but keep the original `OrdinalRawValue` in `src/data/List` storage.
+ * parsed to `OrdinalNumber` but keep the original `OrdinalRawValue` in `src/data/SeriesData` storage.
  */
 export type ParsedValue = ParsedValueNumeric | OrdinalRawValue;
 export type ParsedValueNumeric = number | OrdinalNumber;
 
 /**
- * `ScaleDataValue` means that the user input primitive value to `src/scale/Scale`.
- * (For example, used in `axis.min`, `axis.max`, `convertToPixel`).
- * Note:
- * `ScaleDataValue` is a little different from `OptionDataValue`, because it will not go through
- * `src/data/helper/dataValueHelper.parseDataValue`, but go through `src/scale/Scale['parse']`.
+ * `ScaleDataValue` represents the user input axis value in echarts API.
+ * (For example, used `axis.min`/`axis.max` in echarts option, `convertToPixel`).
+ * NOTICE:
+ *  `ScaleDataValue` is slightly different from `OptionDataValue` for historical reason.
+ *  `ScaleDataValue` should be parsed by `src/scale/Scale['parse']`.
+ *  `OptionDataValue` should be parsed by `src/data/helper/dataValueHelper.parseDataValue`.
+ * FIXME:
+ *  Make `ScaleDataValue` `OptionDataValue` consistent? Since numeric string (like `'123'`) is accepted
+ *  in `series.data` and is effectively accepted in some axis relevant option (e.g., `axis.min/max`),
+ *  `type ScaleDataValue` should also include it for consistency. But it might bring some breaking in
+ *  TS interface (user callback) and need comprehensive checks for all of the parsing of `ScaleDataValue`.
  */
 export type ScaleDataValue = ParsedValueNumeric | OrdinalRawValue | Date;
 
+
+/**
+ * - `ScaleDataValue`:
+ *   e.g. geo accept that primitive input, like `convertToPixel('some_place')`;
+ *   Some coord sys, such as 'cartesian2d', also supports that for only query only a single axis.
+ * - `ScaleDataValue[]`:
+ *   This is the most common case, each array item represent each data in
+ *   every dimension required by the coord sys. e.g., `[12, 98]` represents `[xData, yData]`.
+ * - `(ScaleDataValue[])[]`:
+ *   represents `[data_range_x, data_range_y]`. e.g., `dataToPoint([[5, 600], [8889, 9000]])`,
+ *   represents data range `[5, 600]` in x, and `[8889, 9000]` in y.
+ *   Can be also `[5, [8999, 9000]]`.
+ */
+export type CoordinateSystemDataCoord =
+    (ScaleDataValue | NullUndefined)
+    | (ScaleDataValue | NullUndefined)[]
+    | (ScaleDataValue | ScaleDataValue[] | NullUndefined)[];
+
+export type AxisBreakOption = {
+    start: ScaleDataValue,
+    end: ScaleDataValue,
+    // - `number`: The unit is the same as data value, the same as `start`/`end`, not pixel.
+    // - `string`:
+    //     - Like '35%'. A percent over the axis extent. Useful for keeping the pixel size of break areas
+    //       consistent despite variations in `series.data`, which cannot be achieved by `number`.
+    //     - Also support numeric string like `'123'`, means `123`, following convention.
+    // - If omitted, means 0.
+    gap?: number | string,
+    // undefined means false
+    isExpanded?: boolean
+};
+// Within an axis, this is the identifier among multiple breaks.
+export type AxisBreakOptionIdentifierInAxis = Pick<AxisBreakOption, 'start' | 'end'>;
+
+// - Parsed from the breaks in axis model.
+// - Never be null/undefined.
+// - Contain only unexpanded breaks.
+export type ParsedAxisBreakList = ParsedAxisBreak[];
+export type ParsedAxisBreak = {
+    // Keep breakOption.start/breakOption.end to identify the target break item in echarts action.
+    breakOption: AxisBreakOption,
+    // - Parsed start/end value. e.g. The user input start/end may be a data string
+    //  '2021-12-12', and the parsed start/end are timestamp number.
+    // - `vmin <= vmax` is ensured in parsing.
+    vmin: number,
+    vmax: number,
+    // Parsed from `AxisBreakOption['gap']`. Need to save this intermediate value
+    // because LogScale need to logarithmically transform to them.
+    gapParsed: {
+        type: 'tpAbs' | 'tpPrct'
+        // If 'tpPrct', means percent, val is in 0~1.
+        // If 'tpAbs', means absolute value, val is numeric gap value from option.
+        val: number,
+    },
+    // Final calculated gap.
+    gapReal: number | NullUndefined,
+};
+export type VisualAxisBreak = {
+    type: 'vmin' | 'vmax',
+    parsedBreak: ParsedAxisBreak,
+};
+export type AxisLabelFormatterExtraBreakPart = {
+    break?: {
+        type: 'start' | 'end',
+        start: ParsedAxisBreak['vmin'],
+        end: ParsedAxisBreak['vmax'],
+        // After parsing, the start and end may be reversed and thus `start`
+        // actually maps to `rawEnd`. It may causing confusion. And the param
+        // `value` in the label formatter is also parsed value (except category
+        // axis). So we only provide parsed break start/end to users.
+    }
+};
+
 export interface ScaleTick {
-    value: number
+    /**
+     * This is a number corresponding to the the original business value,
+     * that is, a value in the "outmost" space, the result of `Scale['parse']`.
+     *
+     * NOTICE:
+     *  - In `LogScale`, this the value in the pow space (the original space).
+     *  - In `TimeScale`, this is a timestamp.
+     *  - In `OrdinalScale`, this is NOT an `OrdinalNumber`, since `OrdinalSortInfo` exists.
+     *    This `value` is effectively an `OrdinalNumber` before being sorted.
+     *    Should use the conversion `const tickValue = getTickValueOutermost(scale, tick)`
+     *    accordingly, e.g., as the input of user callbacks, `dataToCoord` and `scale.normalize`.
+     *    PENDING:
+     *      And this case is not properly covered by `scaleMapping` polymorphism as `LogScale`
+     *      does - the manual call of `getTickValueOutermost` is still required everywhere.
+     *    Note use cases below:
+     *      - `axis.min/max` should be specified in "unsorted" space.
+     *      - Futher position calculation requires values in "unsorted" space, such as
+     *        `splitLine`, `splitArea`, minor ticks, etc.
+     *      - `anid` (animation id) requires a value in "unsorted" space, since the animation
+     *        typically represents the location (in `axisTick`, `splitLine` and `splitArea`,
+     *        especially when `boundaryGap: true`).
+     *      - Axis label requires a value in "sorted" space.
+     *      - User interactions (tooltip, axis pointer, etc.) gets values in "sorted" space.
+     */
+    value: number;
+
+    break?: VisualAxisBreak;
+    time?: TimeScaleTick['time'];
+    // NOTICE: null/undefined mean it is unknown whether this tick is "nice".
+    notNice?: boolean | NullUndefined;
+    // Only works on category axis.
+    // Be `true` if this tick is out of category interval.
+    offInterval?: boolean | NullUndefined,
 };
 export interface TimeScaleTick extends ScaleTick {
-    /**
-     * Level information is used for label formatting.
-     * For example, a time axis may contain labels like: Jan, 8th, 16th, 23th,
-     * Feb, and etc. In this case, month labels like Jan and Feb should be
-     * displayed in a more significant way than days.
-     * `level` is set to be 0 when it's the most significant level, like month
-     * labels in the above case.
-     */
-    level?: number
+    time: {
+        /**
+         * Level information is used for label formatting.
+         * `level` is 0 or undefined by default, with higher value indicating greater significant.
+         * For example, a time axis may contain labels like: Jan, 8th, 16th, 23th, Feb, and etc.
+         * In this case, month labels like Jan and Feb should be displayed in a more significant
+         * way than days. The tick labels are:
+         *      labels: `Jan  8th  16th  23th  Feb`
+         *      levels: `1    0    0     0     1  `
+         * The label formatter can be configured as `{[timeUnit]: string | string[]}`, where the
+         * timeUnit is determined by the tick value itself by `time.ts#getUnitFromValue`, while
+         * the `level` is the index under that time unit. (i.e., `formatter[timeUnit][level]`).
+         */
+        level: number,
+        /**
+         * An upper and lower time unit that is suggested to be displayed.
+         * Terms upper/lower means, such as 'year' is "upper" and 'month' is "lower".
+         * This is just suggestion. Time units that are out of this range can also be displayed.
+         */
+        upperTimeUnit: PrimaryTimeUnit,
+        lowerTimeUnit: PrimaryTimeUnit,
+    }
 };
-export interface OrdinalScaleTick extends ScaleTick {
-    /**
-     * Represents where the tick will be placed visually.
-     * Notice:
-     * The value is not the raw ordinal value. And do not changed
-     * after ordinal scale sorted.
-     * We need to:
-     * ```js
-     * const coord = dataToCoord(ordinalScale.getRawOrdinalNumber(tick.value)).
-     * ```
-     * Why place the tick value here rather than the raw ordinal value (like LogScale did)?
-     * Becuase ordinal scale sort is the different case from LogScale, where
-     * axis tick, splitArea should better not to be sorted, especially in
-     * anid(animation id) when `boundaryGap: true`.
-     * Only axis label are sorted.
-     */
-    value: number
-};
+
+/**
+ * Return type of API `CoordinateSystem['dataToLayout']`, expose to users.
+ */
+export interface CoordinateSystemDataLayout {
+    // Base layout rect for a data item.
+    rect?: RectLike;
+    // Commonly equals or shrinked from `rect, may considered padding and border
+    // (depends on every coordinate system).
+    contentRect?: RectLike;
+    // Only available in matrix coordinate system.
+    matrixXYLocatorRange?: number[][];
+
+    // May extend.
+}
+
 
 // Can only be string or index, because it is used in object key in some code.
 // Making the type alias here just intending to show the meaning clearly in code.
@@ -410,10 +700,10 @@ export type DimensionIndex = number;
 export type DimensionIndexLoose = DimensionIndex | string;
 export type DimensionName = string;
 export type DimensionLoose = DimensionName | DimensionIndexLoose;
-export type DimensionType = ListDimensionType;
+export type DimensionType = DataStoreDimensionType;
 
 export const VISUAL_DIMENSIONS = createHashMap<number, keyof DataVisualDimensions>([
-    'tooltip', 'label', 'itemName', 'itemId', 'seriesName'
+    'tooltip', 'label', 'itemName', 'itemId', 'itemGroupId', 'itemChildGroupId', 'seriesName'
 ]);
 // The key is VISUAL_DIMENSIONS
 export interface DataVisualDimensions {
@@ -424,11 +714,13 @@ export interface DataVisualDimensions {
     label?: DimensionIndex;
     itemName?: DimensionIndex;
     itemId?: DimensionIndex;
+    itemGroupId?: DimensionIndex;
+    itemChildGroupId?: DimensionIndex;
     seriesName?: DimensionIndex;
 }
 
 export type DimensionDefinition = {
-    type?: ListDimensionType,
+    type?: DataStoreDimensionType,
     name?: DimensionName,
     displayName?: string
 };
@@ -499,7 +791,7 @@ export type SeriesDataType = 'main' | 'node' | 'edge';
  * ```
  */
 export type ECUnitOption = {
-    // Exclude these reserverd word for `ECOption` to avoid to infer to "any".
+    // Exclude these reserved word for `ECOption` to avoid to infer to "any".
     baseOption?: unknown
     options?: unknown
     media?: unknown
@@ -507,8 +799,13 @@ export type ECUnitOption = {
     timeline?: ComponentOption | ComponentOption[]
     backgroundColor?: ZRColor
     darkMode?: boolean | 'auto'
-    textStyle?: Pick<LabelOption, 'color' | 'fontStyle' | 'fontWeight' | 'fontSize' | 'fontFamily'>
+    textStyle?: GlobalTextStyleOption
     useUTC?: boolean
+    hoverLayerThreshold?: number
+
+    legacyViewCoordSysCenterBase?: boolean
+    // A temporary guard in case that some unexpected effect occurs after axis impl refactoring.
+    legacyMinMaxDontInverseAxis?: boolean
 
     [key: string]: ComponentOption | ComponentOption[] | Dictionary<unknown> | unknown
 
@@ -597,6 +894,8 @@ export type OptionDataItem =
 export type OptionDataItemObject<T> = {
     id?: OptionId;
     name?: OptionName;
+    groupId?: OptionId;
+    childGroupId?: OptionId;
     value?: T[] | T;
     selected?: boolean;
 };
@@ -616,7 +915,7 @@ export interface GraphEdgeItemObject<
      */
     target?: string | number
 }
-export type OptionDataValue = string | number | Date;
+export type OptionDataValue = string | number | Date | null | undefined;
 
 export type OptionDataValueNumeric = number | '-';
 export type OptionDataValueCategory = string;
@@ -641,6 +940,12 @@ export interface OptionEncodeVisualDimensions {
     itemId?: OptionEncodeValue;
     seriesName?: OptionEncodeValue;
     // Notice: `value` is coordDim, not nonCoordDim.
+
+    // Group id is used for linking the aggregate relationship between two set of data.
+    // Which is useful in prepresenting the transition key of drilldown/up animation.
+    // Or hover linking.
+    itemGroupId?: OptionEncodeValue;
+    childGroupdId?: OptionEncodeValue;
 }
 export interface OptionEncode extends OptionEncodeVisualDimensions {
     [coordDim: string]: OptionEncodeValue | undefined
@@ -679,16 +984,6 @@ export interface CallbackDataParams {
     $vars: string[];
 }
 export type InterpolatableValue = ParsedValue | ParsedValue[];
-export type DimensionUserOuputEncode = {
-    [coordOrVisualDimName: string]:
-        // index: coordDimIndex, value: dataDimIndex
-        DimensionIndex[]
-};
-export type DimensionUserOuput = {
-    // The same as `data.dimensions`
-    dimensionNames: DimensionName[]
-    encode: DimensionUserOuputEncode
-};
 
 export type DecalDashArrayX = number | (number | number[])[];
 export type DecalDashArrayY = number | number[];
@@ -744,7 +1039,8 @@ export type ComponentLayoutMode = {
     type?: 'box',
     ignoreSize?: boolean | boolean[]
 };
-/******************* Mixins for Common Option Properties   ********************** */
+
+// ------------------ Mixins for Common Option Properties ------------------
 export type PaletteOptionMixin = ColorPaletteOptionMixin;
 
 export interface ColorPaletteOptionMixin {
@@ -752,74 +1048,27 @@ export interface ColorPaletteOptionMixin {
     colorLayer?: ZRColor[][]
 }
 
-export interface AriaLabelOption {
-    enabled?: boolean;
-    description?: string;
-    general?: {
-        withTitle?: string;
-        withoutTitle?: string;
-    };
-    series?: {
-        maxCount?: number;
-        single?: {
-            prefix?: string;
-            withName?: string;
-            withoutName?: string;
-        };
-        multiple?: {
-            prefix?: string;
-            withName?: string;
-            withoutName?: string;
-            separator?: {
-                middle?: string;
-                end?: string;
-            }
-        }
-    };
-    data?: {
-        maxCount?: number;
-        allData?: string;
-        partialData?: string;
-        withName?: string;
-        withoutName?: string;
-        separator?: {
-            middle?: string;
-            end?: string;
-        }
-    }
-}
-
-// Extending is for compating ECharts 4
-export interface AriaOption extends AriaLabelOption {
-    mainType?: 'aria';
-
-    enabled?: boolean;
-    label?: AriaLabelOption;
-    decal?: {
-        show?: boolean;
-        decals?: DecalObject | DecalObject[];
-    };
-}
-
-export interface AriaOptionMixin {
-    aria?: AriaOption
-}
-
 /**
  * Mixin of option set to control the box layout of each component.
  */
 export interface BoxLayoutOptionMixin {
-    width?: number | string;
-    height?: number | string;
-    top?: number | string;
-    right?: number | string;
-    bottom?: number | string;
-    left?: number | string;
+    width?: PositionSizeOption;
+    height?: PositionSizeOption;
+    top?: PositionSizeOption;
+    right?: PositionSizeOption;
+    bottom?: PositionSizeOption;
+    left?: PositionSizeOption;
 }
+/**
+ * Need to be parsed by `parsePositionOption` or `parsePositionSizeOption`.
+ * Accept number, or numeric string (`'123'`), or percentage ('100%'), as x/y/width/height pixel number.
+ * If null/undefined or invalid, return NaN.
+ */
+export type PositionSizeOption = number | string;
 
-export interface CircleLayoutOptionMixin {
+export interface CircleLayoutOptionMixin<TNuance extends {centerExtra: unknown} = {centerExtra: never}> {
     // Can be percent
-    center?: (number | string)[]
+    center?: (number | string)[] | TNuance['centerExtra']
     // Can specify [innerRadius, outerRadius]
     radius?: (number | string)[] | number | string
 }
@@ -841,6 +1090,12 @@ export interface BorderOptionMixin {
     borderMiterLimit?: number
 }
 
+export type ColorBy = 'series' | 'data';
+
+export interface SunburstColorByMixin {
+    colorBy?: ColorBy
+}
+
 export type AnimationDelayCallbackParam = {
     count: number
     index: number
@@ -854,6 +1109,7 @@ export interface AnimationOption {
     delay?: number
     // additive?: boolean
 }
+
 /**
  * Mixin of option set to control the animation of series.
  */
@@ -904,54 +1160,96 @@ export interface RoamOptionMixin {
      */
     roam?: boolean | 'pan' | 'move' | 'zoom' | 'scale'
     /**
-     * Current center position.
+     * Hover over an area where roaming is triggered.
+     * - if `null`/`undefined`, the trigger area is
+     *   the intersection of "self bounding rect" and "clipping rect (if any)".
+     * - if 'global', the trigger area is
+     *   the intersection of "the entire canvas" and "clipping rect (if any)".
+     * NOTE:
+     *  The clipping rect, which can be enabled by `clip: true`, is typically the layout rect.
+     *  The layout rect is typically determined by option `left`/`right`/`top`/`bottom`/`width`/`height`, some
+     *  components/series, such as `geo` and `series.map` can also be determined by `layoutCenter`/`layoutSize`,
+     *  and may modified by `preserveAspect`.
+     *
+     * PENDING: do we need to support to only trigger roaming on the shapes themselves,
+     *  rather than the bounding rect?
+     * PENDING: do we need to support to check by the laytout rect? But in this case,
+     *  `roamTrigger: 'global', clip: true` is more reasonable.
      */
-    center?: number[]
+    roamTrigger?: 'global' | 'selfRect' | NullUndefined
     /**
-     * Current zoom level. Default is 1
+     * @see VIEW_COORD_SYS_CENTER_ZOOM_DEFINITION
+     */
+    center?: (number | string)[]
+    /**
+     * Current transformation scale. Default is 1.
+     * @see VIEW_COORD_SYS_CENTER_ZOOM_DEFINITION
      */
     zoom?: number
-
+    /**
+     * Limit of `zoom`. The name is inconsistent for historical reason.
+     */
     scaleLimit?: {
         min?: number
         max?: number
     }
+
+    /**
+     * Symbol size scale ratio on roaming.
+     */
+    nodeScaleRatio?: number
+}
+
+export interface PreserveAspectMixin {
+    // Suppose a "viewport" is decided by `left`/`right`/`top`/`bottom`/`width`/`height`,
+    // - null/undefined/false (default): aspect ratio will not be preserved, but stretched to fill
+    //   the "viewport".
+    // - 'contain'/true: The aspect ratio is preserved; the viewRect is contained by the "viewport",
+    //   and scaled up as much as possible to meet the "viewport".
+    // - 'cover': The aspect ratio is preserved; the viewRect covers the "viewport", and scaled down
+    //   as much as possible to meet the "viewport".
+    preserveAspect?: boolean | 'contain' | 'cover';
+    // By default 'center'
+    preserveAspectAlign?: 'left' | 'right' | 'center';
+    // By default 'middle'
+    preserveAspectVerticalAlign?: 'top' | 'bottom' | 'middle';
 }
 
 // TODO: TYPE value type?
 export type SymbolSizeCallback<T> = (rawValue: any, params: T) => number | number[];
 export type SymbolCallback<T> = (rawValue: any, params: T) => string;
 export type SymbolRotateCallback<T> = (rawValue: any, params: T) => number;
-export type SymbolOffsetCallback<T> = (rawValue: any, params: T) => (string | number)[];
+export type SymbolOffsetCallback<T> = (rawValue: any, params: T) => string | number | (string | number)[];
 /**
  * Mixin of option set to control the element symbol.
  * Include type of symbol, and size of symbol.
  */
-export interface SymbolOptionMixin<T = unknown> {
+export interface SymbolOptionMixin<T = never> {
     /**
      * type of symbol, like `cirlce`, `rect`, or custom path and image.
      */
-    symbol?: string | (unknown extends T ? never : SymbolCallback<T>)
+    symbol?: string | (T extends never ? never : SymbolCallback<T>)
     /**
      * Size of symbol.
      */
-    symbolSize?: number | number[] | (unknown extends T ? never : SymbolSizeCallback<T>)
+    symbolSize?: number | number[] | (T extends never ? never : SymbolSizeCallback<T>)
 
-    symbolRotate?: number | (unknown extends T ? never : SymbolRotateCallback<T>)
+    symbolRotate?: number | (T extends never ? never : SymbolRotateCallback<T>)
 
     symbolKeepAspect?: boolean
 
-    symbolOffset?: (string | number)[] | (unknown extends T ? never : SymbolOffsetCallback<T>)
+    symbolOffset?: string | number | (string | number)[] | (T extends never ? never : SymbolOffsetCallback<T>)
 }
 
 /**
  * ItemStyleOption is a most common used set to config element styles.
  * It includes both fill and stroke style.
  */
-export interface ItemStyleOption extends ShadowOptionMixin, BorderOptionMixin {
-    color?: ZRColor
+export interface ItemStyleOption<TCbParams = never> extends ShadowOptionMixin, BorderOptionMixin {
+    color?: ZRColor | (TCbParams extends never ? never : ((params: TCbParams) => ZRColor))
     opacity?: number
     decal?: DecalObject | 'none'
+    borderRadius?: (number | string)[] | number | string
 }
 
 /**
@@ -1010,9 +1308,9 @@ export type VisualOptionLinear = Arrayable<VisualOptionUnit>;
 
 /**
  * Option about visual properties can be encoded from ordinal categories.
- * Each value can either be a dictonary to lookup with category name, or
+ * Each value can either be a dictionary to lookup with category name, or
  * be an array to lookup with category index. In this case the array length should
- * be same with categories
+ * be same with categories.
  */
 export type VisualOptionCategory = Arrayable<VisualOptionUnit> | Dictionaryable<VisualOptionUnit>;
 
@@ -1021,8 +1319,14 @@ export type VisualOptionCategory = Arrayable<VisualOptionUnit> | Dictionaryable<
  */
 export type BuiltinVisualProperty = keyof VisualOptionUnit;
 
-export interface TextCommonOption extends ShadowOptionMixin {
-    color?: string
+export type TextCommonOptionNuanceBase = Record<string, unknown>;
+export type TextCommonOptionNuanceDefault = {};
+// 'auto' has been deprecated.
+type LabelStyleColorString = ColorString | 'inherit' | 'auto'; // Nominal as a comment.
+export interface TextCommonOption<
+    TNuance extends TextCommonOptionNuanceBase = TextCommonOptionNuanceDefault
+> extends ShadowOptionMixin {
+    color?: 'color' extends keyof TNuance ? (TNuance['color'] | LabelStyleColorString) : LabelStyleColorString
     fontStyle?: ZRFontStyle
     fontWeight?: ZRFontWeight
     fontFamily?: string
@@ -1044,8 +1348,12 @@ export interface TextCommonOption extends ShadowOptionMixin {
     borderDashOffset?: number
     borderRadius?: number | number[]
     padding?: number | number[]
+    /**
+     * Currently margin related options are not declared here. They are not supported in rich text.
+     * @see {LabelCommonOption}
+     */
 
-    width?: number | string// Percent
+    width?: number | string // Percent
     height?: number
     textBorderColor?: string
     textBorderWidth?: number
@@ -1060,6 +1368,17 @@ export interface TextCommonOption extends ShadowOptionMixin {
     tag?: string
 }
 
+export type GlobalTextStyleOption = Pick<
+    TextCommonOption,
+    'color' | 'opacity'
+    | 'fontStyle' | 'fontWeight' | 'fontSize' | 'fontFamily'
+    | 'textShadowColor' | 'textShadowBlur' | 'textShadowOffsetX' | 'textShadowOffsetY'
+    | 'textBorderColor' | 'textBorderWidth' | 'textBorderType' | 'textBorderDashOffset'
+>;
+
+export interface RichTextOption extends Dictionary<TextCommonOption> {
+}
+
 export interface LabelFormatterCallback<T = CallbackDataParams> {
     (params: T): string
 }
@@ -1067,37 +1386,76 @@ export interface LabelFormatterCallback<T = CallbackDataParams> {
  * LabelOption is an option set to control the style of labels.
  * Include color, background, shadow, truncate, rotation, distance, etc..
  */
-export interface LabelOption extends TextCommonOption {
+export interface LabelOption<
+    TNuance extends {positionExtra: unknown} = {positionExtra: never}
+> extends LabelCommonOption {
     /**
      * If show label
      */
     show?: boolean
     // TODO: TYPE More specified 'inside', 'insideTop'....
     // x, y can be both percent string or number px.
-    position?: ElementTextConfig['position']
+    position?: ElementTextConfig['position'] | TNuance['positionExtra']
     distance?: number
     rotate?: number
     offset?: number[]
 
-    /**
-     * Min margin between labels. Used when label has layout.
-     */
-    // It's minMargin instead of margin is for not breaking the previous code using margin.
-    minMargin?: number
-
-    overflow?: TextStyleProps['overflow']
     silent?: boolean
     precision?: number | 'auto'
     valueAnimation?: boolean
 
     // TODO: TYPE not all label support formatter
     // formatter?: string | ((params: CallbackDataParams) => string)
-
-    rich?: Dictionary<TextCommonOption>
 }
 
-export interface SeriesLabelOption extends LabelOption {
-    formatter?: string | LabelFormatterCallback<CallbackDataParams>
+/**
+ * Common options for both `axis.axisLabel`, `axis.nameTextStyle and other `label`s.
+ * Historically, they have had some nuances in options.
+ */
+export interface LabelCommonOption<
+    TNuanceOption extends TextCommonOptionNuanceBase = TextCommonOptionNuanceDefault
+> extends TextCommonOption<TNuanceOption> {
+
+    /**
+     * Min margin between labels. Used when label has layout.
+     * PENDING: @see {LabelMarginType}
+     * It's `minMargin` instead of `margin` is for not breaking the previous code using `margin`.
+     * See the summary in `textMargin`.
+     *
+     * [CAUTION]: do not set `minMargin` in `defaultOption`, otherwise users have to explicitly
+     *  clear the `minMargin` to use `textMargin`.
+     */
+    minMargin?: number
+    /**
+     * The space around the label to escape from overlapping.
+     * Applied on the label local rect (rather than rotated enlarged rect)
+     * Follow the format defined by `format.ts#normalizeCssArray`.
+     *
+     * Introduce the name `textMargin` rather than reuse the existing names to avoid breaking change:
+     *  - `margin` historically have been used to indicate the distance from `label.x/.y` to something:
+     *      - `axisLabel.margin` & `axisPointer.label.margin`: to the axis line.
+     *      - `calendar.dayLabel/monthLabel/yearLabel.margin`:
+     *      - `series-pie.label.margin`: to pie body (deprecated, replaced by `edgeDistance`)
+     *      - `series-themeRiver.label.margin`: to the shape edge
+     *  - `minMargin` conveys the same meaning as this `textMargin` but has a different nuance,
+     *    it works like CSS margin collapse (gap = label1.minMargin/2 + label2.minMargin/2),
+     *    and `minMargin` applied on the global bounding rect (parallel to screen x and y) rather
+     *    than the original local bounding rect (can be rotated, smaller and more presice).
+     * PENDING: @see {LabelMarginType}
+     */
+    textMargin?: number | number[]
+
+    overflow?: TextStyleProps['overflow']
+    lineOverflow?: TextStyleProps['lineOverflow']
+    ellipsis?: TextStyleProps['ellipsis']
+    rich?: RichTextOption
+}
+
+export interface SeriesLabelOption<
+    TCallbackDataParams extends CallbackDataParams = CallbackDataParams,
+    TNuance extends {positionExtra: unknown} = {positionExtra: never}
+> extends LabelOption<TNuance> {
+    formatter?: string | LabelFormatterCallback<TCallbackDataParams>
 }
 
 /**
@@ -1146,12 +1504,12 @@ export interface SeriesLineLabelOption extends LineLabelOption {
 export interface LabelLayoutOptionCallbackParams {
     /**
      * Index of data which the label represents.
-     * It can be null if label does't represent any data.
+     * It can be null if label doesn't represent any data.
      */
     dataIndex?: number,
     /**
      * Type of data which the label represents.
-     * It can be null if label does't represent any data.
+     * It can be null if label doesn't represent any data.
      */
     dataType?: SeriesDataType,
     seriesIndex: number,
@@ -1214,34 +1572,39 @@ export interface LabelLayoutOption {
 export type LabelLayoutOptionCallback = (params: LabelLayoutOptionCallbackParams) => LabelLayoutOption;
 
 
-interface TooltipFormatterCallback<T> {
+export interface TooltipFormatterCallback<T> {
     /**
      * For sync callback
      * params will be an array on axis trigger.
      */
-    (params: T, asyncTicket: string): string | HTMLElement[]
+    (params: T, asyncTicket: string): string | HTMLElement | HTMLElement[]
     /**
      * For async callback.
      * Returned html string will be a placeholder when callback is not invoked.
      */
-    (params: T, asyncTicket: string, callback: (cbTicket: string, htmlOrDomNodes: string | HTMLElement[]) => void)
-        : string | HTMLElement[]
+    (
+        params: T, asyncTicket: string,
+        callback: (cbTicket: string, htmlOrDomNodes: string | HTMLElement | HTMLElement[]) => void
+    ) : string | HTMLElement | HTMLElement[]
 }
 
 type TooltipBuiltinPosition = 'inside' | 'top' | 'left' | 'right' | 'bottom';
 type TooltipBoxLayoutOption = Pick<
     BoxLayoutOptionMixin, 'top' | 'left' | 'right' | 'bottom'
 >;
+
+export type TooltipPositionCallbackParams = CallbackDataParams | CallbackDataParams[];
+
 /**
  * Position relative to the hoverred element. Only available when trigger is item.
  */
-interface PositionCallback {
+export interface TooltipPositionCallback {
     (
         point: [number, number],
         /**
          * params will be an array on axis trigger.
          */
-        params: CallbackDataParams | CallbackDataParams[],
+        params: TooltipPositionCallbackParams,
         /**
          * Will be HTMLDivElement when renderMode is html
          * Otherwise it's graphic.Text
@@ -1261,7 +1624,7 @@ interface PositionCallback {
              */
             viewSize: [number, number]
         }
-    ): number[] | string[] | TooltipBuiltinPosition | TooltipBoxLayoutOption
+    ): Array<number | string> | TooltipBuiltinPosition | TooltipBoxLayoutOption
 }
 /**
  * Common tooltip option
@@ -1273,14 +1636,22 @@ export interface CommonTooltipOption<FormatterParams> {
 
     /**
      * When to trigger
+     * NOTE: mousewheel may modify view by dataZoom.
      */
-    triggerOn?: 'mousemove' | 'click' | 'none' | 'mousemove|click'
+    triggerOn?: 'mousemove' | 'click' | 'none' | 'mousewheel' | 'mousemove|click|mousewheel'
     /**
      * Whether to not hide popup content automatically
      */
     alwaysShowContent?: boolean
 
     formatter?: string | TooltipFormatterCallback<FormatterParams>
+
+    /**
+     * Formatter of value.
+     *
+     * Will be ignored if tooltip.formatter is specified.
+     */
+    valueFormatter?: (value: OptionDataValue | OptionDataValue[], dataIndex: number) => string
     /**
      * Absolution pixel [x, y] array. Or relative percent string [x, y] array.
      * If trigger is 'item'. position can be set to 'inside' / 'top' / 'left' / 'right' / 'bottom',
@@ -1288,7 +1659,7 @@ export interface CommonTooltipOption<FormatterParams> {
      *
      * Support to be a callback
      */
-    position?: (number | string)[] | TooltipBuiltinPosition | PositionCallback | TooltipBoxLayoutOption
+    position?: (number | string)[] | TooltipBuiltinPosition | TooltipPositionCallback | TooltipBoxLayoutOption
 
     confine?: boolean
 
@@ -1314,6 +1685,15 @@ export interface CommonTooltipOption<FormatterParams> {
      * If you need to interact in the tooltip like with links or buttons, it can be set as true.
      */
     enterable?: boolean
+
+    /**
+     * Whether enable display transition when show/hide tooltip.
+     * Defaults to `true` for backward compatibility.
+     * If set to `false`, the tooltip 'display' will be set to 'none' when hidden.
+     * @default true
+     * @since v6.0.0
+     */
+    displayTransition?: boolean
 
     backgroundColor?: ColorString
     borderColor?: ColorString
@@ -1348,12 +1728,18 @@ export interface CommonTooltipOption<FormatterParams> {
 export type ComponentItemTooltipOption<T> = CommonTooltipOption<T> & {
     // Default content HTML.
     content?: string;
+    /**
+     * Whether to encode HTML content according to `tooltip.renderMode`.
+     *
+     * e.g. renderMode 'html' needs to encode but 'richText' does not.
+     */
+    encodeHTMLContent?: boolean;
     formatterParams?: ComponentItemTooltipLabelFormatterParams;
 };
 export type ComponentItemTooltipLabelFormatterParams = {
     componentType: string
     name: string
-    // properies key array like ['name']
+    // properties key array like ['name']
     $vars: string[]
 } & {
     // Other properties
@@ -1394,8 +1780,10 @@ export interface CommonAxisPointerOption {
 
     triggerTooltip?: boolean
 
+    triggerEmphasis?: boolean
+
     /**
-     * current value. When using axisPointer.handle, value can be set to define the initail position of axisPointer.
+     * current value. When using axisPointer.handle, value can be set to define the initial position of axisPointer.
      */
     value?: ScaleDataValue
 
@@ -1473,8 +1861,26 @@ export interface ComponentOption {
 
     z?: number;
     zlevel?: number;
-    // FIXME:TS more
+
+    coordinateSystem?: string
+    coordinateSystemUsage?: CoordinateSystemUsageOption
+    coord?: CoordinateSystemDataCoord
 }
+
+/**
+ * - "data": Each data item is laid out based on a coord sys.
+ *   See `COORD_SYS_USAGE_KIND_DATA`.
+ * - "box": The overall bounding rect or anchor point is calculated based on a coord sys.
+ *   See `COORD_SYS_USAGE_KIND_BOX`.
+ *   e.g.,
+ *      grid rect (cartesian rect) is calculate based on matrix/calendar coord sys;
+ *      pie center is calculated based on calendar/cartesian;
+ *
+ * The default value (if not declared in option `coordinateSystemUsage`):
+ *  For series, be "data", since this is the most case and backward compatible.
+ *  For non-series components, be "box", since "data" is not applicable.
+ */
+export type CoordinateSystemUsageOption = 'data' | 'box';
 
 export type BlurScope = 'coordinateSystem' | 'series' | 'global';
 
@@ -1484,15 +1890,16 @@ export type BlurScope = 'coordinateSystem' | 'series' | 'global';
  */
 export type InnerFocus = DefaultEmphasisFocus | ArrayLike<number> | Dictionary<ArrayLike<number>>;
 
-export interface DefaultExtraStateOpts {
-    emphasis: any
-    select: any
-    blur: any
+export interface DefaultStatesMixin {
+    // FIXME
+    emphasis?: any
+    select?: any
+    blur?: any
 }
 
 export type DefaultEmphasisFocus = 'none' | 'self' | 'series';
 
-export interface DefaultExtraEmpasisState {
+export interface DefaultStatesMixinEmphasis {
     /**
      * self: Focus self and blur all others.
      * series: Focus series and blur all other series.
@@ -1500,19 +1907,20 @@ export interface DefaultExtraEmpasisState {
     focus?: DefaultEmphasisFocus
 }
 
-interface ExtraStateOptsBase {
-    emphasis?: {
-        focus?: string
-    },
-    select?: any
-    blur?: any
+export interface StatesMixinBase {
+    emphasis?: unknown
+    select?: unknown
+    blur?: unknown
 }
 
-export interface StatesOptionMixin<StateOption, ExtraStateOpts extends ExtraStateOptsBase = DefaultExtraStateOpts> {
+export interface StatesOptionMixin<
+    StateOption,
+    StatesMixin extends StatesMixinBase
+> {
     /**
      * Emphasis states
      */
-    emphasis?: StateOption & ExtraStateOpts['emphasis'] & {
+    emphasis?: StateOption & StatesMixin['emphasis'] & {
         /**
          * Scope of blurred element when focus.
          *
@@ -1523,23 +1931,56 @@ export interface StatesOptionMixin<StateOption, ExtraStateOpts extends ExtraStat
          * Default to be coordinate system.
          */
         blurScope?: BlurScope
+
+        /**
+         * If emphasis state is disabled.
+         */
+        disabled?: boolean
     }
     /**
      * Select states
      */
-    select?: StateOption & ExtraStateOpts['select']
+    select?: StateOption & StatesMixin['select'] & {
+        disabled?: boolean
+    }
     /**
      * Blur states.
      */
-    blur?: StateOption & ExtraStateOpts['blur']
+    blur?: StateOption & StatesMixin['blur']
+}
+
+export interface UniversalTransitionOption {
+    enabled?: boolean
+    /**
+     * Animation delay of each divided element
+     */
+    delay?: (index: number, count: number) => number
+    /**
+     * How to divide the shape in combine and split animation.
+     */
+    divideShape?: 'clone' | 'split'
+    /**
+     * Series will have transition between if they have same seriesKey.
+     * Usually it is a string. It can also be an array,
+     * which means it can be transition from or to multiple series with each key in this array item.
+     *
+     * Note:
+     * If two series have both array seriesKey. They will be compared after concated to a string(which is order independent)
+     * Transition between string key has higher priority.
+     *
+     * Default to use series id.
+     */
+    seriesKey?: string | string[]
 }
 
 export interface SeriesOption<
-    StateOption=any, ExtraStateOpts extends ExtraStateOptsBase = DefaultExtraStateOpts> extends
+    StateOption = unknown,
+    StatesMixin extends StatesMixinBase = DefaultStatesMixin
+> extends
     ComponentOption,
     AnimationOptionMixin,
     ColorPaletteOptionMixin,
-    StatesOptionMixin<StateOption, ExtraStateOpts>
+    StatesOptionMixin<StateOption, StatesMixin>
 {
     mainType?: 'series'
 
@@ -1552,8 +1993,17 @@ export interface SeriesOption<
      */
     cursor?: string
 
+    /**
+     * groupId of data. can be used for doing drilldown / up animation
+     * It will be ignored if:
+     *  - groupId is specified in each data
+     *  - encode.itemGroupId is given.
+     */
+    dataGroupId?: OptionId
     // Needs to be override
     data?: unknown
+
+    colorBy?: ColorBy
 
     legendHoverLink?: boolean
 
@@ -1563,13 +2013,8 @@ export interface SeriesOption<
     progressive?: number | false
     progressiveThreshold?: number
     progressiveChunkMode?: 'mod'
-    /**
-     * Not available on every series
-     */
-    coordinateSystem?: string
 
     hoverLayerThreshold?: number
-    // FIXME:TS more
 
     /**
      * When dataset is used, seriesLayoutBy specifies whether the column or the row of dataset is mapped to the series
@@ -1591,42 +2036,57 @@ export interface SeriesOption<
     stateAnimation?: AnimationOption
 
     /**
+     * If enabled universal transition cross series.
+     * @example
+     *  universalTransition: true
+     *  universalTransition: { enabled: true }
+     */
+    universalTransition?: boolean | UniversalTransitionOption
+
+    /**
      * Map of selected data
      * key is name or index of data.
      */
-    selectedMap?: Dictionary<boolean>
-    selectedMode?: 'single' | 'multiple' | boolean
+    selectedMap?: Dictionary<boolean> | 'all'
+    selectedMode?: 'single' | 'multiple' | 'series' | boolean
 }
 
 export interface SeriesOnCartesianOptionMixin {
     xAxisIndex?: number
     yAxisIndex?: number
 
-    xAxisId?: string
-    yAxisId?: string
+    xAxisId?: OptionId
+    yAxisId?: OptionId
 }
 
 export interface SeriesOnPolarOptionMixin {
-    radiusAxisIndex?: number
-    angleAxisIndex?: number
-
-    radiusAxisId?: string
-    angleAxisId?: string
+    polarIndex?: number
+    polarId?: OptionId;
 }
 
 export interface SeriesOnSingleOptionMixin {
     singleAxisIndex?: number
-    singleAxisId?: string
+    singleAxisId?: OptionId
 }
 
 export interface SeriesOnGeoOptionMixin {
     geoIndex?: number;
-    geoId?: string
+    geoId?: OptionId
 }
 
-export interface SeriesOnCalendarOptionMixin {
+export interface SeriesOnRadarOptionMixin {
+    radarIndex?: number;
+    radarId?: OptionId
+}
+
+export interface ComponentOnCalendarOptionMixin {
     calendarIndex?: number
-    calendarId?: string
+    calendarId?: OptionId
+}
+
+export interface ComponentOnMatrixOptionMixin {
+    matrixIndex?: number
+    matrixId?: OptionId
 }
 
 export interface SeriesLargeOptionMixin {
@@ -1635,12 +2095,14 @@ export interface SeriesLargeOptionMixin {
 }
 export interface SeriesStackOptionMixin {
     stack?: string
+    stackStrategy?: 'samesign' | 'all' | 'positive' | 'negative';
+    stackOrder?: 'seriesAsc' | 'seriesDesc'; // default: seriesAsc
 }
 
 type SamplingFunc = (frame: ArrayLike<number>) => number;
 
 export interface SeriesSamplingOptionMixin {
-    sampling?: 'none' | 'average' | 'min' | 'max' | 'sum' | 'lttb' | SamplingFunc
+    sampling?: 'none' | 'average' | 'min' | 'max' | 'minmax' | 'sum' | 'lttb' | SamplingFunc
 }
 
 export interface SeriesEncodeOptionMixin {
@@ -1653,3 +2115,97 @@ export interface SeriesEncodeOptionMixin {
 }
 
 export type SeriesEncodableModel = SeriesModel<SeriesOption & SeriesEncodeOptionMixin>;
+
+
+// TODO Move to aria component
+export interface AriaLabelOption {
+    enabled?: boolean;
+    description?: string;
+    general?: {
+        withTitle?: string;
+        withoutTitle?: string;
+    };
+    series?: {
+        maxCount?: number;
+        single?: {
+            prefix?: string;
+            withName?: string;
+            withoutName?: string;
+        };
+        multiple?: {
+            prefix?: string;
+            withName?: string;
+            withoutName?: string;
+            separator?: {
+                middle?: string;
+                end?: string;
+            }
+        }
+    };
+    data?: {
+        maxCount?: number;
+        allData?: string;
+        partialData?: string;
+        withName?: string;
+        withoutName?: string;
+        separator?: {
+            middle?: string;
+            end?: string;
+        },
+        excludeDimensionId?: number[]
+    }
+}
+
+// Extending is for compating ECharts 4
+export interface AriaOption extends AriaLabelOption {
+    mainType?: 'aria';
+
+    enabled?: boolean;
+    label?: AriaLabelOption;
+    decal?: {
+        show?: boolean;
+        decals?: DecalObject | DecalObject[];
+    };
+}
+
+export interface AriaOptionMixin {
+    aria?: AriaOption
+}
+
+
+export interface RoamPayload extends Payload {
+    type: `${string}${typeof ROAM_ACTION_TYPE_SUFFIX}`
+    dx: number
+    dy: number
+    // This is a delta zoom, not an absolute zoom.
+    zoom: number
+    originX: number
+    originY: number
+}
+
+export const ROAM_ACTION_TYPE_SUFFIX = 'Roam';
+
+/**
+ * @usage class Xxx implements RoamHostModel {...}
+ */
+export interface RoamHostModel {
+    // Can return a VIEW_COORD_SYS only if the it is owned by this series or component.
+    // For example, if a series graph lays out on a separate geo component, do not return;
+    // Otherwise, graph can return if it has an exclusive VIEW_COORD_SYS.
+    __ownRoamView: () => View | NullUndefined;
+}
+export type RoamHostComponentOrSeries = ComponentModel<ComponentOption & RoamOptionMixin> & RoamHostModel;
+
+export interface RoamHostView {
+    /**
+     * A performance shortcut - called by action handler to update the view directly
+     * without any data/visual processing (which are assumed to be unchanged), while
+     * ensuring consistent behavior between internal and external action triggers.
+     *
+     * Only "own coordinate system" is updated here. Dependent series/components should
+     * be updated in `ChartView['updateTransform']` or `ComponentView['updateTransform']`.
+     */
+    __updateOnOwnRoam(payload: RoamPayload, componentOrSeries: ComponentModel, api: ExtensionAPI): void
+}
+
+export type ChartComponentRoamHostView = (ChartView | ComponentView) & RoamHostView;

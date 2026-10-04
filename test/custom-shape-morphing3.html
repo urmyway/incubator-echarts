@@ -25,7 +25,6 @@ under the License.
         <script src="lib/simpleRequire.js"></script>
         <script src="lib/config.js"></script>
         <script src='lib/jquery.min.js'></script>
-        <script src="../dist/echarts.js"></script>
         <script src="lib/testHelper.js"></script>
         <link rel="stylesheet" href="lib/reset.css" />
     </head>
@@ -165,7 +164,6 @@ under the License.
                                     children: [{
                                         type: 'rect',
                                         transition: ['shape', 'style'],
-                                        morph: true,
                                         shape: {
                                             x: basePos[0],
                                             y: basePos[1],
@@ -218,7 +216,6 @@ under the License.
                                     children: [{
                                         type: 'rect',
                                         transition: ['shape', 'style'],
-                                        morph: true,
                                         shape: {
                                             x: basePos[0],
                                             y: basePos[1],
@@ -270,7 +267,6 @@ under the License.
                                     children: [{
                                         type: 'circle',
                                         transition: ['shape', 'style'],
-                                        morph: true,
                                         shape: {
                                             cx: pos[0],
                                             cy: pos[1],
@@ -323,7 +319,6 @@ under the License.
                                     children: [{
                                         type: 'rect',
                                         transition: ['shape', 'style'],
-                                        morph: true,
                                         shape: {
                                             x: basePos[0],
                                             y: valPos[1] - height / 2,
@@ -394,8 +389,7 @@ under the License.
                 title: [
                     'Test: buttons, should morph animation merge/split.',
                     'Test: click buttons **before animation finished**, should no blink.',
-                    'Test: click buttons **twice**, should no blink.',
-                    'Test: use dataZoom, update animation should exist'
+                    'Test: click buttons **twice**, should no blink.'
                 ],
                 option: baseOption,
                 lazyUpdate: true,

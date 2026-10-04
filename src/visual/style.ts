@@ -18,7 +18,8 @@
 */
 
 import { isFunction, extend, createHashMap } from 'zrender/src/core/util';
-import { StageHandler, CallbackDataParams, ZRColor, Dictionary, InnerDecalObject } from '../util/types';
+import { StageHandler, CallbackDataParams, ZRColor, Dictionary, InnerDecalObject }
+    from '../util/types';
 import makeStyleMapper from '../model/mixin/makeStyleMapper';
 import { ITEM_STYLE_KEY_MAP } from '../model/mixin/itemStyle';
 import { LINE_STYLE_KEY_MAP } from '../model/mixin/lineStyle';
@@ -42,7 +43,7 @@ function getStyleMapper(seriesModel: SeriesModel, stylePath: string) {
     const styleMapper = seriesModel.visualStyleMapper
         || defaultStyleMappers[stylePath as 'itemStyle' | 'lineStyle'];
     if (!styleMapper) {
-        console.warn(`Unkown style type '${stylePath}'.`);
+        console.warn(`Unknown style type '${stylePath}'.`);
         return defaultStyleMappers.itemStyle;
     }
     return styleMapper;
@@ -54,7 +55,7 @@ function getDefaultColorKey(seriesModel: SeriesModel, stylePath: string): 'strok
         || defaultColorKey[stylePath as 'itemStyle' | 'lineStyle'];
 
     if (!colorKey) {
-        console.warn(`Unkown style type '${stylePath}'.`);
+        console.warn(`Unknown style type '${stylePath}'.`);
         return 'fill';
     }
 
@@ -91,8 +92,8 @@ const seriesStyleTask: StageHandler = {
         const hasAutoColor = globalStyle.fill === 'auto' || globalStyle.stroke === 'auto';
         // Get from color palette by default.
         if (!globalStyle[colorKey] || colorCallback || hasAutoColor) {
-            // Note: if some series has color specified (e.g., by itemStyle.color), we DO NOT
-            // make it effect palette. Bacause some scenarios users need to make some series
+            // Note: If some series has color specified (e.g., by itemStyle.color), we DO NOT
+            // make it effect palette. Because some scenarios users need to make some series
             // transparent or as background, which should better not effect the palette.
             const colorPalette = seriesModel.getColorFromPalette(
                 // TODO series count changed.
@@ -102,10 +103,10 @@ const seriesStyleTask: StageHandler = {
                 globalStyle[colorKey] = colorPalette;
                 data.setVisual('colorFromPalette', true);
             }
-            globalStyle.fill = (globalStyle.fill === 'auto' || typeof globalStyle.fill === 'function')
+            globalStyle.fill = (globalStyle.fill === 'auto' || isFunction(globalStyle.fill))
                 ? colorPalette
                 : globalStyle.fill;
-            globalStyle.stroke = (globalStyle.stroke === 'auto' || typeof globalStyle.stroke === 'function')
+            globalStyle.stroke = (globalStyle.stroke === 'auto' || isFunction(globalStyle.stroke))
                 ? colorPalette
                 : globalStyle.stroke;
         }
@@ -132,15 +133,13 @@ const seriesStyleTask: StageHandler = {
 const sharedModel = new Model();
 const dataStyleTask: StageHandler = {
     createOnAllSeries: true,
-    performRawSeries: true,
     reset(seriesModel, ecModel) {
-        if (seriesModel.ignoreStyleOnData || ecModel.isSeriesFiltered(seriesModel)) {
+        if (seriesModel.ignoreStyleOnData) {
             return;
         }
 
         const data = seriesModel.getData();
-        const stylePath = seriesModel.visualStyleAccessPath
-            || 'itemStyle';
+        const stylePath = seriesModel.visualStyleAccessPath || 'itemStyle';
         // Set in itemStyle
         const getStyle = getStyleMapper(seriesModel, stylePath);
 
@@ -176,24 +175,19 @@ const dataStyleTask: StageHandler = {
 const dataColorPaletteTask: StageHandler = {
     performRawSeries: true,
     overallReset(ecModel) {
-        // Each type of series use one scope.
-        // Pie and funnel are using diferrent scopes
+        // Each type of series uses one scope.
+        // Pie and funnel are using different scopes.
         const paletteScopeGroupByType = createHashMap<object>();
-        ecModel.eachSeries(function (seriesModel) {
-            if (!seriesModel.useColorPaletteOnData) {
-                return;
+        ecModel.eachSeries((seriesModel: SeriesModel) => {
+            if (!seriesModel.isColorBySeries()) {
+                const key = seriesModel.type + '-' + seriesModel.getColorBy();
+                inner(seriesModel).scope = paletteScopeGroupByType.get(key)
+                    || paletteScopeGroupByType.set(key, {});
             }
-            let colorScope = paletteScopeGroupByType.get(seriesModel.type);
-            if (!colorScope) {
-                colorScope = {};
-                paletteScopeGroupByType.set(seriesModel.type, colorScope);
-            }
-            inner(seriesModel).scope = colorScope;
         });
 
-
-        ecModel.eachSeries(function (seriesModel) {
-            if (!seriesModel.useColorPaletteOnData || ecModel.isSeriesFiltered(seriesModel)) {
+        ecModel.eachSeries((seriesModel: SeriesModel) => {
+            if (seriesModel.isColorBySeries()) {
                 return;
             }
 
@@ -202,8 +196,7 @@ const dataColorPaletteTask: StageHandler = {
             const data = seriesModel.getData();
             const colorScope = inner(seriesModel).scope;
 
-            const stylePath = seriesModel.visualStyleAccessPath
-                || 'itemStyle';
+            const stylePath = seriesModel.visualStyleAccessPath || 'itemStyle';
             const colorKey = getDefaultColorKey(seriesModel, stylePath);
 
             data.each(function (idx) {

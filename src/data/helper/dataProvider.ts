@@ -21,7 +21,7 @@
 // ??? refactor? check the outer usage of data provider.
 // merge with defaultDimValueGetter?
 
-import {isTypedArray, extend, assert, each, isObject, bind} from 'zrender/src/core/util';
+import {isTypedArray, extend, assert, each, isObject, bind, isArray} from 'zrender/src/core/util';
 import {getDataItemValue} from '../../util/model';
 import { createSourceFromSeriesDataOption, Source, isSourceInstance } from '../Source';
 import {ArrayLike, Dictionary} from 'zrender/src/core/types';
@@ -34,9 +34,10 @@ import {
     SERIES_LAYOUT_BY_COLUMN,
     SERIES_LAYOUT_BY_ROW,
     DimensionName, DimensionIndex, OptionSourceData,
-    DimensionIndexLoose, OptionDataItem, OptionDataValue, SourceFormat, SeriesLayoutBy, ParsedValue
+    OptionDataItem, OptionDataValue, SourceFormat, SeriesLayoutBy, ParsedValue, DimensionLoose, NullUndefined
 } from '../../util/types';
-import List from '../List';
+import SeriesData from '../SeriesData';
+import { error } from '../../util/log';
 
 export interface DataProvider {
     /**
@@ -112,9 +113,11 @@ export class DefaultDataProvider implements DataProvider {
         // declare source is Source;
         this._source = source;
         const data = this._data = source.data;
+        const sourceFormat = source.sourceFormat;
+        const seriesLayoutBy = source.seriesLayoutBy;
 
         // Typed array. TODO IE10+?
-        if (source.sourceFormat === SOURCE_FORMAT_TYPED_ARRAY) {
+        if (sourceFormat === SOURCE_FORMAT_TYPED_ARRAY) {
             if (__DEV__) {
                 if (dimSize == null) {
                     throw new Error('Typed array data must specify dimension size');
@@ -123,6 +126,11 @@ export class DefaultDataProvider implements DataProvider {
             this._offset = 0;
             this._dimSize = dimSize;
             this._data = data;
+        }
+
+        if (__DEV__) {
+            const validator = rawSourceDataValidatorMap[getMethodMapKey(sourceFormat, seriesLayoutBy)];
+            validator && validator(data, source.dimensionsDefine);
         }
 
         mountMethods(this, data, source);
@@ -136,7 +144,7 @@ export class DefaultDataProvider implements DataProvider {
         return 0;
     }
 
-    getItem(idx: number, out?: ArrayLike<number>): OptionDataItem {
+    getItem(idx: number, out?: ArrayLike<OptionDataValue>): OptionDataItem {
         return;
     }
 
@@ -286,13 +294,49 @@ export class DefaultDataProvider implements DataProvider {
 }
 
 
+type RawSourceDataValidator = (
+    rawData: OptionSourceData,
+    dimsDef: { name?: DimensionName }[],
+) => void;
+
+const validateSimply: RawSourceDataValidator = function (
+    rawData
+) {
+    if (!isArray(rawData)) {
+        error('series.data or dataset.source must be an array.');
+    }
+};
+
+/**
+ * Only run in dev mode - hint users for debug.
+ */
+const rawSourceDataValidatorMap: Dictionary<RawSourceDataValidator> = {
+    [SOURCE_FORMAT_ARRAY_ROWS + '_' + SERIES_LAYOUT_BY_COLUMN]: validateSimply,
+    [SOURCE_FORMAT_ARRAY_ROWS + '_' + SERIES_LAYOUT_BY_ROW]: validateSimply,
+    [SOURCE_FORMAT_OBJECT_ROWS]: validateSimply,
+    [SOURCE_FORMAT_KEYED_COLUMNS]: function (
+        rawData, dimsDef
+    ) {
+        for (let i = 0; i < dimsDef.length; i++) {
+            const dimName = dimsDef[i].name;
+            if (dimName == null) {
+                error('dimension name must not be null/undefined.');
+            }
+        }
+    },
+    [SOURCE_FORMAT_ORIGINAL]: validateSimply
+};
+
 
 type RawSourceItemGetter = (
     rawData: OptionSourceData,
     startIndex: number,
     dimsDef: { name?: DimensionName }[],
-    idx: number
-) => OptionDataItem;
+    idx: number,
+    // Only used in SOURCE_FORMAT_ARRAY_ROWS + '_' + SERIES_LAYOUT_BY_ROW and SOURCE_FORMAT_KEYED_COLUMNS
+    // to avoid create a new [] if `out` is provided.
+    out?: ArrayLike<OptionDataValue>
+) => OptionDataItem | ArrayLike<OptionDataValue>;
 
 const getItemSimply: RawSourceItemGetter = function (
     rawData, startIndex, dimsDef, idx
@@ -303,35 +347,30 @@ const getItemSimply: RawSourceItemGetter = function (
 const rawSourceItemGetterMap: Dictionary<RawSourceItemGetter> = {
     [SOURCE_FORMAT_ARRAY_ROWS + '_' + SERIES_LAYOUT_BY_COLUMN]: function (
         rawData, startIndex, dimsDef, idx
-    ): OptionDataValue[] {
+    ) {
         return (rawData as OptionDataValue[][])[idx + startIndex];
     },
     [SOURCE_FORMAT_ARRAY_ROWS + '_' + SERIES_LAYOUT_BY_ROW]: function (
-        rawData, startIndex, dimsDef, idx
-    ): OptionDataValue[] {
+        rawData, startIndex, dimsDef, idx, out
+    ) {
         idx += startIndex;
-        const item = [];
+        const item = out || [];
         const data = rawData as OptionDataValue[][];
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
-            item.push(row ? row[idx] : null);
+            item[i] = row ? row[idx] : null;
         }
         return item;
     },
     [SOURCE_FORMAT_OBJECT_ROWS]: getItemSimply,
     [SOURCE_FORMAT_KEYED_COLUMNS]: function (
-        rawData, startIndex, dimsDef, idx
-    ): OptionDataValue[] {
-        const item = [];
+        rawData, startIndex, dimsDef, idx, out
+    ) {
+        const item = out || [];
         for (let i = 0; i < dimsDef.length; i++) {
             const dimName = dimsDef[i].name;
-            if (__DEV__) {
-                if (dimName == null) {
-                    throw new Error();
-                }
-            }
-            const col = (rawData as Dictionary<OptionDataValue[]>)[dimName];
-            item.push(col ? col[idx] : null);
+            const col = dimName != null ? (rawData as Dictionary<OptionDataValue[]>)[dimName] : null;
+            item[i] = col ? col[idx] : null;
         }
         return item;
     },
@@ -343,7 +382,7 @@ export function getRawSourceItemGetter(
 ): RawSourceItemGetter {
     const method = rawSourceItemGetterMap[getMethodMapKey(sourceFormat, seriesLayoutBy)];
     if (__DEV__) {
-        assert(method, 'Do not suppport get item on "' + sourceFormat + '", "' + seriesLayoutBy + '".');
+        assert(method, 'Do not support get item on "' + sourceFormat + '", "' + seriesLayoutBy + '".');
     }
     return method;
 }
@@ -380,12 +419,7 @@ const rawSourceDataCounterMap: Dictionary<RawSourceDataCounter> = {
         rawData, startIndex, dimsDef
     ) {
         const dimName = dimsDef[0].name;
-        if (__DEV__) {
-            if (dimName == null) {
-                throw new Error();
-            }
-        }
-        const col = (rawData as Dictionary<OptionDataValue[]>)[dimName];
+        const col = dimName != null ? (rawData as Dictionary<OptionDataValue[]>)[dimName] : null;
         return col ? col.length : 0;
     },
     [SOURCE_FORMAT_ORIGINAL]: countSimply
@@ -396,48 +430,43 @@ export function getRawSourceDataCounter(
 ): RawSourceDataCounter {
     const method = rawSourceDataCounterMap[getMethodMapKey(sourceFormat, seriesLayoutBy)];
     if (__DEV__) {
-        assert(method, 'Do not suppport count on "' + sourceFormat + '", "' + seriesLayoutBy + '".');
+        assert(method, 'Do not support count on "' + sourceFormat + '", "' + seriesLayoutBy + '".');
     }
     return method;
 }
 
 
-
-// TODO
-// merge it to dataProvider?
 type RawSourceValueGetter = (
     dataItem: OptionDataItem,
     dimIndex: DimensionIndex,
-    dimName: DimensionName
-    // If dimIndex is null/undefined, return OptionDataItem.
-    // Otherwise, return OptionDataValue.
-) => OptionDataValue | OptionDataItem;
+    property: DimensionName
+) => OptionDataValue;
 
 const getRawValueSimply = function (
-    dataItem: ArrayLike<OptionDataValue>, dimIndex: number, dimName: string
-): OptionDataValue | ArrayLike<OptionDataValue> {
-    return dimIndex != null ? dataItem[dimIndex] : dataItem;
+    dataItem: ArrayLike<OptionDataValue>, dimIndex: number, property: string
+): OptionDataValue {
+    return dataItem[dimIndex];
 };
 
-const rawSourceValueGetterMap: {[sourceFormat: string]: RawSourceValueGetter} = {
+const rawSourceValueGetterMap: Partial<Record<SourceFormat, RawSourceValueGetter>> = {
 
     [SOURCE_FORMAT_ARRAY_ROWS]: getRawValueSimply,
 
     [SOURCE_FORMAT_OBJECT_ROWS]: function (
-        dataItem: Dictionary<OptionDataValue>, dimIndex: number, dimName: string
-    ): OptionDataValue | Dictionary<OptionDataValue> {
-        return dimIndex != null ? dataItem[dimName] : dataItem;
+        dataItem: Dictionary<OptionDataValue>, dimIndex: number, property: string
+    ): OptionDataValue {
+        return dataItem[property];
     },
 
     [SOURCE_FORMAT_KEYED_COLUMNS]: getRawValueSimply,
 
     [SOURCE_FORMAT_ORIGINAL]: function (
-        dataItem: OptionDataItem, dimIndex: number, dimName: string
-    ): OptionDataValue | OptionDataItem {
+        dataItem: OptionDataItem, dimIndex: number, property: string
+    ): OptionDataValue {
         // FIXME: In some case (markpoint in geo (geo-map.html)),
         // dataItem is {coord: [...]}
         const value = getDataItemValue(dataItem);
-        return (dimIndex == null || !(value instanceof Array))
+        return !(value instanceof Array)
             ? value
             : value[dimIndex];
     },
@@ -448,7 +477,7 @@ const rawSourceValueGetterMap: {[sourceFormat: string]: RawSourceValueGetter} = 
 export function getRawSourceValueGetter(sourceFormat: SourceFormat): RawSourceValueGetter {
     const method = rawSourceValueGetterMap[sourceFormat];
     if (__DEV__) {
-        assert(method, 'Do not suppport get value on "' + sourceFormat + '".');
+        assert(method, 'Do not support get value on "' + sourceFormat + '".');
     }
     return method;
 }
@@ -469,9 +498,10 @@ function getMethodMapKey(sourceFormat: SourceFormat, seriesLayoutBy: SeriesLayou
 // value may be 0.91000000001, which have brings trouble to display.
 // TODO: consider how to treat null/undefined/NaN when display?
 export function retrieveRawValue(
-    data: List, dataIndex: number, dim?: DimensionName | DimensionIndexLoose
+    data: SeriesData, dataIndex: number,
     // If dimIndex is null/undefined, return OptionDataItem.
     // Otherwise, return OptionDataValue.
+    dim?: DimensionLoose | NullUndefined
 ): OptionDataValue | OptionDataItem {
     if (!data) {
         return;
@@ -484,17 +514,22 @@ export function retrieveRawValue(
         return;
     }
 
-    const sourceFormat = data.getProvider().getSource().sourceFormat;
-    let dimName;
-    let dimIndex;
+    const store = data.getStore();
+    const sourceFormat = store.getSource().sourceFormat;
 
-    const dimInfo = data.getDimensionInfo(dim);
-    if (dimInfo) {
-        dimName = dimInfo.name;
-        dimIndex = dimInfo.index;
+    if (dim != null) {
+        const dimIndex = data.getDimensionIndex(dim);
+        const property = store.getDimensionProperty(dimIndex);
+
+        return getRawSourceValueGetter(sourceFormat)(dataItem, dimIndex, property);
     }
-
-    return getRawSourceValueGetter(sourceFormat)(dataItem, dimIndex, dimName);
+    else {
+        let result = dataItem;
+        if (sourceFormat === SOURCE_FORMAT_ORIGINAL) {
+            result = getDataItemValue(dataItem);
+        }
+        return result;
+    }
 }
 
 
@@ -510,12 +545,12 @@ export function retrieveRawValue(
  * @param dataIndex
  * @param attr like 'selected'
  */
-export function retrieveRawAttr(data: List, dataIndex: number, attr: string): any {
+export function retrieveRawAttr(data: SeriesData, dataIndex: number, attr: string): any {
     if (!data) {
         return;
     }
 
-    const sourceFormat = data.getProvider().getSource().sourceFormat;
+    const sourceFormat = data.getStore().getSource().sourceFormat;
 
     if (sourceFormat !== SOURCE_FORMAT_ORIGINAL
         && sourceFormat !== SOURCE_FORMAT_OBJECT_ROWS

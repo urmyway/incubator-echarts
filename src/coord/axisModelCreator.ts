@@ -25,18 +25,23 @@ import {
     fetchLayoutMode
 } from '../util/layout';
 import OrdinalMeta from '../data/OrdinalMeta';
-import { DimensionName, BoxLayoutOptionMixin, OrdinalRawValue } from '../util/types';
-import { AxisBaseOption, AXIS_TYPES } from './axisCommonTypes';
+import {
+    DimensionName, BoxLayoutOptionMixin, OrdinalRawValue,
+} from '../util/types';
+import { AxisBaseOption, AXIS_TYPES, CategoryAxisBaseOption } from './axisCommonTypes';
 import GlobalModel from '../model/Global';
 import { each, merge } from 'zrender/src/core/util';
 import { EChartsExtensionInstallRegisters } from '../extension';
+import { BaseAxisBreakPayload } from '../component/axis/axisAction';
+import { AxisBreakUpdateResult, getAxisBreakHelper } from '../component/axis/axisBreakHelper';
 
 
 type Constructor<T> = new (...args: any[]) => T;
 
-export interface AxisModelExtendedInCreator<Opt extends AxisBaseOption> {
-    getCategories(rawData?: boolean): OrdinalRawValue[] | Opt['data']
+export interface AxisModelExtendedInCreator {
+    getCategories(rawData?: boolean): OrdinalRawValue[] | CategoryAxisBaseOption['data']
     getOrdinalMeta(): OrdinalMeta
+    updateAxisBreaks(payload: BaseAxisBreakPayload): AxisBreakUpdateResult;
 }
 
 /**
@@ -60,7 +65,7 @@ export default function axisModelCreator<
             extraDefaultOption, true
         );
 
-        class AxisModel extends BaseAxisModelClass implements AxisModelExtendedInCreator<AxisOptionT> {
+        class AxisModel extends BaseAxisModelClass implements AxisModelExtendedInCreator {
 
             static type = axisName + 'Axis.' + axisType;
             type = axisName + 'Axis.' + axisType;
@@ -69,9 +74,6 @@ export default function axisModelCreator<
 
             private __ordinalMeta: OrdinalMeta;
 
-            constructor(...args: any[]) {
-                super(...args);
-            }
 
             mergeDefaultAndTheme(option: AxisOptionT, ecModel: GlobalModel): void {
                 const layoutMode = fetchLayoutMode(this);
@@ -100,13 +102,15 @@ export default function axisModelCreator<
              * Should not be called before all of 'getInitailData' finished.
              * Because categories are collected during initializing data.
              */
-            getCategories(rawData?: boolean): OrdinalRawValue[] | AxisBaseOption['data'] {
+            getCategories(rawData?: boolean): OrdinalRawValue[] | CategoryAxisBaseOption['data'] {
                 const option = this.option;
                 // FIXME
                 // warning if called before all of 'getInitailData' finished.
                 if (option.type === 'category') {
                     if (rawData) {
-                        return option.data as AxisBaseOption['data'];
+                        // NOTICE: return the raw data even if not existing; never use a fallback like `[]`;
+                        // Its existence matters in some legacy cases.
+                        return (option as CategoryAxisBaseOption).data;
                     }
                     return this.__ordinalMeta.categories;
                 }
@@ -115,6 +119,14 @@ export default function axisModelCreator<
             getOrdinalMeta(): OrdinalMeta {
                 return this.__ordinalMeta;
             }
+
+            updateAxisBreaks(payload: BaseAxisBreakPayload): AxisBreakUpdateResult {
+                const axisBreakHelper = getAxisBreakHelper();
+                return axisBreakHelper
+                    ? axisBreakHelper.updateModelAxisBreak(this, payload)
+                    : {breaks: []};
+            }
+
         }
 
         registers.registerComponentModel(AxisModel);
@@ -128,5 +140,5 @@ export default function axisModelCreator<
 
 function getAxisType(option: AxisBaseOption) {
     // Default axis with data is category axis
-    return option.type || (option.data ? 'category' : 'value');
+    return option.type || ((option as CategoryAxisBaseOption).data ? 'category' : 'value');
 }

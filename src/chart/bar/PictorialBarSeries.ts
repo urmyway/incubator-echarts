@@ -26,14 +26,18 @@ import {
     SeriesStackOptionMixin,
     StatesOptionMixin,
     OptionDataItemObject,
-    DefaultEmphasisFocus
+    DefaultEmphasisFocus,
+    SeriesEncodeOptionMixin,
+    CallbackDataParams
 } from '../../util/types';
 import type Cartesian2D from '../../coord/cartesian/Cartesian2D';
 import { inheritDefaultOption } from '../../util/component';
+import tokens from '../../visual/tokens';
+import { SERIES_TYPE_PICTORIAL_BAR } from '../../layout/barCommon';
 
 export interface PictorialBarStateOption {
     itemStyle?: ItemStyleOption
-    label?: SeriesLabelOption
+    label?: SeriesLabelOption<CallbackDataParams, {positionExtra: 'outside'}>
 }
 
 interface PictorialBarSeriesSymbolOption {
@@ -111,23 +115,24 @@ export interface PictorialBarDataItemOption extends PictorialBarSeriesSymbolOpti
 export interface PictorialBarSeriesOption
     extends BaseBarSeriesOption<PictorialBarStateOption, ExtraStateOption>, PictorialBarStateOption,
     PictorialBarSeriesSymbolOption,
-    SeriesStackOptionMixin {
+    SeriesStackOptionMixin, SeriesEncodeOptionMixin {
 
     type?: 'pictorialBar'
 
     coordinateSystem?: 'cartesian2d'
 
     data?: (PictorialBarDataItemOption | OptionDataValue | OptionDataValue[])[]
+
+    clip?: boolean
 }
 
 class PictorialBarSeriesModel extends BaseBarSeriesModel<PictorialBarSeriesOption> {
-    static type = 'series.pictorialBar';
+    static type = 'series.' + SERIES_TYPE_PICTORIAL_BAR;
     type = PictorialBarSeriesModel.type;
 
     static dependencies = ['grid'];
 
     coordinateSystem: Cartesian2D;
-
 
     hasSymbolVisual = true;
     defaultSymbol = 'roundRect';
@@ -150,6 +155,10 @@ class PictorialBarSeriesModel extends BaseBarSeriesModel<PictorialBarSeriesOptio
 
         barGap: '-100%',      // In most case, overlap is needed.
 
+        // Pictorial bar do not clip by default because in many cases
+        // xAxis and yAxis are not displayed and it's expected not to clip
+        clip: false,
+
         // z can be set in data item, which is z2 actually.
 
         // Disable progressive
@@ -163,7 +172,7 @@ class PictorialBarSeriesModel extends BaseBarSeriesModel<PictorialBarSeriesOptio
 
         select: {
             itemStyle: {
-                borderColor: '#212121'
+                borderColor: tokens.color.primary
             }
         }
     });

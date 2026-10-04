@@ -25,7 +25,8 @@ import ExtensionAPI from '../../core/ExtensionAPI';
 import { makeInner } from '../../util/model';
 import SeriesModel from '../../model/Series';
 import Group from 'zrender/src/graphic/Group';
-import { enterBlur } from '../../util/states';
+import { enterBlur, leaveBlur } from '../../util/states';
+import { traverseUpdateZ, retrieveZInfo } from '../../util/graphic';
 
 const inner = makeInner<{
     keep: boolean
@@ -65,13 +66,15 @@ abstract class MarkerView extends ComponentView {
         markerGroupMap.each(item => {
             !inner(item).keep && this.group.remove(item.group);
         });
+
+        updateZ(ecModel, markerGroupMap, this.type as 'markPoint' | 'markLine' | 'markArea');
     }
 
     markKeep(drawGroup: MarkerDraw) {
         inner(drawGroup).keep = true;
     }
 
-    blurSeries(seriesModelList: SeriesModel[]) {
+    toggleBlurSeries(seriesModelList: SeriesModel[], isBlur: boolean) {
         each(seriesModelList, seriesModel => {
             const markerModel = MarkerModel.getMarkerModelFromSeries(
                 seriesModel,
@@ -81,7 +84,7 @@ abstract class MarkerView extends ComponentView {
                 const data = markerModel.getData();
                 data.eachItemGraphicEl(function (el) {
                     if (el) {
-                        enterBlur(el);
+                        isBlur ? enterBlur(el) : leaveBlur(el);
                     }
                 });
             }
@@ -94,6 +97,27 @@ abstract class MarkerView extends ComponentView {
         ecModel: GlobalModel,
         api: ExtensionAPI
     ): void;
+}
+
+function updateZ(
+    ecModel: GlobalModel,
+    markerGroupMap: HashMap<MarkerDraw>,
+    type: 'markPoint' | 'markLine' | 'markArea'
+): void {
+    ecModel.eachSeries(seriesModel => {
+
+        const markerModel = MarkerModel.getMarkerModelFromSeries(
+            seriesModel,
+            type
+        );
+
+        const markerDraw = markerGroupMap.get(seriesModel.id);
+
+        if (markerModel && markerDraw && markerDraw.group) {
+            const { z, zlevel } = retrieveZInfo(markerModel);
+            traverseUpdateZ(markerDraw.group, z, zlevel);
+        }
+    });
 }
 
 export default MarkerView;

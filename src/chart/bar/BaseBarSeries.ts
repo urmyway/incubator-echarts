@@ -18,20 +18,27 @@
 */
 
 import SeriesModel from '../../model/Series';
-import createListFromArray from '../helper/createListFromArray';
+import createSeriesData from '../helper/createSeriesData';
 import {
     SeriesOption,
     SeriesOnCartesianOptionMixin,
     SeriesOnPolarOptionMixin,
     ScaleDataValue,
-    DefaultExtraStateOpts
+    DefaultStatesMixin,
+    StatesMixinBase
 } from '../../util/types';
 import GlobalModel from '../../model/Global';
 import Cartesian2D from '../../coord/cartesian/Cartesian2D';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
+import {dimPermutations} from '../../component/marker/MarkAreaView';
+import { each } from 'zrender/src/core/util';
+import type Axis2D from '../../coord/cartesian/Axis2D';
+import type Model from '../../model/Model';
+import { CategoryAxisBaseOption } from '../../coord/axisCommonTypes';
+import type Axis from '../../coord/Axis';
 
 
-export interface BaseBarSeriesOption<StateOption, ExtraStateOption = DefaultExtraStateOpts>
+export interface BaseBarSeriesOption<StateOption, ExtraStateOption extends StatesMixinBase = DefaultStatesMixin>
     extends SeriesOption<StateOption, ExtraStateOption>,
     SeriesOnCartesianOptionMixin,
     SeriesOnPolarOptionMixin {
@@ -41,16 +48,16 @@ export interface BaseBarSeriesOption<StateOption, ExtraStateOption = DefaultExtr
      */
     barMinHeight?: number
     /**
-     * Min angle of bar. Avaiable on polar coordinate system
+     * Min angle of bar. Available on polar coordinate system.
      */
     barMinAngle?: number
 
     /**
-     * Max width of bar. Default to be 1 on cartesian coordinate system. Otherwise it's null
+     * Max width of bar. Defaults to 1 on cartesian coordinate system. Otherwise it's null.
      */
-    barMaxWidth?: number
+    barMaxWidth?: number | string
 
-    barMinWidth?: number
+    barMinWidth?: number | string
 
     /**
      * Bar width. Will be calculated automatically.
@@ -62,6 +69,11 @@ export interface BaseBarSeriesOption<StateOption, ExtraStateOption = DefaultExtr
      * Gap between each bar inside category. Default to be 30%. Can be an aboslute pixel value
      */
     barGap?: string | number
+
+    /**
+     * @private
+     */
+    defaultBarGap?: string | number
 
     /**
      * Gap between each category. Default to be 20%. can be an absolute pixel value.
@@ -78,27 +90,115 @@ class BaseBarSeriesModel<Opts extends BaseBarSeriesOption<unknown> = BaseBarSeri
     static type = 'series.__base_bar__';
     type = BaseBarSeriesModel.type;
 
-    getInitialData(option: Opts, ecModel: GlobalModel): List {
-        return createListFromArray(this.getSource(), this, {useEncodeDefaulter: true});
+    getInitialData(option: Opts, ecModel: GlobalModel): SeriesData {
+        return createSeriesData(null, this, {useEncodeDefaulter: true});
     }
 
-    getMarkerPosition(value: ScaleDataValue[]) {
+    getMarkerPosition(
+        value: ScaleDataValue[],
+        dims?: typeof dimPermutations[number],
+        startingAtTick?: boolean
+    ) {
         const coordSys = this.coordinateSystem;
-        if (coordSys) {
+        if (coordSys && coordSys.clampData) {
             // PENDING if clamp ?
-            const pt = coordSys.dataToPoint(coordSys.clampData(value));
-            const data = this.getData();
-            const offset = data.getLayout('offset');
-            const size = data.getLayout('size');
-            const offsetIndex = (coordSys as Cartesian2D).getBaseAxis().isHorizontal() ? 0 : 1;
-            pt[offsetIndex] += offset + size / 2;
+            const clampData = coordSys.clampData(value);
+            const pt = coordSys.dataToPoint(clampData);
+            if (startingAtTick) {
+                each(coordSys.getAxes(), function (axis: Axis2D, idx: number) {
+                    // If axis type is category, use tick coords instead
+                    if (axis.type === 'category' && dims != null) {
+                        const tickCoords = axis.getTicksCoords();
+                        const alignTicksWithLabel = (axis.getTickModel() as Model<CategoryAxisBaseOption['axisTick']>)
+                            .get('alignWithLabel');
+
+                        let targetTickId = clampData[idx];
+                        // The index of rightmost tick of markArea is 1 larger than x1/y1 index
+                        const isEnd = dims[idx] === 'x1' || dims[idx] === 'y1';
+                        if (isEnd && !alignTicksWithLabel) {
+                            targetTickId += 1;
+                        }
+
+                        // The only contains one tick, tickCoords is
+                        // like [{coord: 0, tickValue: 0}, {coord: 0}]
+                        // to the length should always be larger than 1
+                        if (tickCoords.length < 2) {
+                            return;
+                        }
+                        else if (tickCoords.length === 2) {
+                            // The left value and right value of the axis are
+                            // the same. coord is 0 in both items. Use the max
+                            // value of the axis as the coord
+                            pt[idx] = axis.toGlobalCoord(
+                                axis.getExtent()[isEnd ? 1 : 0]
+                            );
+                            return;
+                        }
+
+                        let leftCoord;
+                        let coord;
+                        let stepTickValue = 1;
+                        for (let i = 0; i < tickCoords.length; i++) {
+                            const tickCoord = tickCoords[i].coord;
+                            // The last item of tickCoords doesn't contain
+                            // tickValue
+                            const tickValue = i === tickCoords.length - 1
+                                ? tickCoords[i - 1].tickValue + stepTickValue
+                                : tickCoords[i].tickValue;
+                            if (tickValue === targetTickId) {
+                                coord = tickCoord;
+                                break;
+                            }
+                            else if (tickValue < targetTickId) {
+                                leftCoord = tickCoord;
+                            }
+                            else if (leftCoord != null && tickValue > targetTickId) {
+                                coord = (tickCoord + leftCoord) / 2;
+                                break;
+                            }
+                            if (i === 1) {
+                                // Here we assume the step of category axes is
+                                // the same
+                                stepTickValue = tickValue - tickCoords[0].tickValue;
+                            }
+                        }
+                        if (coord == null) {
+                            if (!leftCoord) {
+                                // targetTickId is smaller than all tick ids in the
+                                // visible area, use the leftmost tick coord
+                                coord = tickCoords[0].coord;
+                            }
+                            else if (leftCoord) {
+                                // targetTickId is larger than all tick ids in the
+                                // visible area, use the rightmost tick coord
+                                coord = tickCoords[tickCoords.length - 1].coord;
+                            }
+                        }
+                        pt[idx] = axis.toGlobalCoord(coord);
+                    }
+                });
+            }
+            else {
+                const data = this.getData();
+                const offset = data.getLayout('offset');
+                const size = data.getLayout('size');
+                const offsetIndex = (coordSys as Cartesian2D).getBaseAxis().isHorizontal() ? 0 : 1;
+                pt[offsetIndex] += offset + size / 2;
+            }
             return pt;
         }
         return [NaN, NaN];
     }
 
+    /**
+     * @implements
+     */
+    __requireStartValue(axis: Axis): boolean {
+        return this.getBaseAxis() !== axis;
+    }
+
     static defaultOption: BaseBarSeriesOption<unknown, unknown> = {
-        zlevel: 0,
+        // zlevel: 0,
         z: 2,
         coordinateSystem: 'cartesian2d',
         legendHoverLink: true,
@@ -115,7 +215,9 @@ class BaseBarSeriesModel<Opts extends BaseBarSeriesOption<unknown> = BaseBarSeri
         large: false,
         largeThreshold: 400,
         progressive: 3e3,
-        progressiveChunkMode: 'mod'
+        progressiveChunkMode: 'mod',
+
+        defaultBarGap: '10%'
     };
 }
 

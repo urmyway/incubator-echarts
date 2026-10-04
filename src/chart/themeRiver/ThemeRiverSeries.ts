@@ -18,9 +18,9 @@
 */
 
 import SeriesModel from '../../model/Series';
-import createDimensions from '../../data/helper/createDimensions';
+import prepareSeriesDataSchema from '../../data/helper/createDimensions';
 import {getDimensionTypeByAxis} from '../../data/helper/dimensionHelper';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import * as zrUtil from 'zrender/src/core/util';
 import {groupData, SINGLE_REFERRING} from '../../util/model';
 import LegendVisualProvider from '../../visual/LegendVisualProvider';
@@ -33,7 +33,9 @@ import {
     BoxLayoutOptionMixin,
     ZRColor,
     Dictionary,
-    SeriesLabelOption
+    SeriesLabelOption,
+    CallbackDataParams,
+    DefaultStatesMixinEmphasis
 } from '../../util/types';
 import SingleAxis from '../../coord/single/SingleAxis';
 import GlobalModel from '../../model/Global';
@@ -48,12 +50,17 @@ interface ThemeRiverSeriesLabelOption extends SeriesLabelOption {
 
 type ThemerRiverDataItem = [OptionDataValueDate, OptionDataValueNumeric, string];
 
-export interface ThemeRiverStateOption {
+interface ThemeRiverStatesMixin {
+    emphasis?: DefaultStatesMixinEmphasis
+}
+export interface ThemeRiverStateOption<TCbParams = never> {
     label?: ThemeRiverSeriesLabelOption
-    itemStyle?: ItemStyleOption
+    itemStyle?: ItemStyleOption<TCbParams>
 }
 
-export interface ThemeRiverSeriesOption extends SeriesOption<ThemeRiverStateOption>, ThemeRiverStateOption,
+export interface ThemeRiverSeriesOption
+    extends SeriesOption<ThemeRiverStateOption<CallbackDataParams>, ThemeRiverStatesMixin>,
+    ThemeRiverStateOption<CallbackDataParams>,
     SeriesOnSingleOptionMixin, BoxLayoutOptionMixin {
     type?: 'themeRiver'
 
@@ -71,8 +78,10 @@ export interface ThemeRiverSeriesOption extends SeriesOption<ThemeRiverStateOpti
     data?: ThemerRiverDataItem[]
 }
 
+export const SERIES_TYPE_THEME_RIVER = 'themeRiver';
+
 class ThemeRiverSeriesModel extends SeriesModel<ThemeRiverSeriesOption> {
-    static readonly type = 'series.themeRiver';
+    static readonly type = 'series.' + SERIES_TYPE_THEME_RIVER;
     readonly type = ThemeRiverSeriesModel.type;
 
     static readonly dependencies = ['singleAxis'];
@@ -80,8 +89,6 @@ class ThemeRiverSeriesModel extends SeriesModel<ThemeRiverSeriesOption> {
     nameMap: zrUtil.HashMap<number, string>;
 
     coordinateSystem: Single;
-
-    useColorPaletteOnData = true;
 
     /**
      * @override
@@ -151,10 +158,10 @@ class ThemeRiverSeriesModel extends SeriesModel<ThemeRiverSeriesOption> {
 
     /**
      * @override
-     * @param  option  the initial option that user gived
+     * @param  option  the initial option that user gave
      * @param  ecModel  the model object for themeRiver option
      */
-    getInitialData(option: ThemeRiverSeriesOption, ecModel: GlobalModel): List {
+    getInitialData(option: ThemeRiverSeriesOption, ecModel: GlobalModel): SeriesData {
 
         const singleAxisModel = this.getReferringComponents('singleAxis', SINGLE_REFERRING).models[0];
 
@@ -179,7 +186,7 @@ class ThemeRiverSeriesModel extends SeriesModel<ThemeRiverSeriesOption> {
             }
         }
 
-        const dimensionsInfo = createDimensions(data, {
+        const { dimensions } = prepareSeriesDataSchema(data, {
             coordDimensions: ['single'],
             dimensionsDefine: [
                 {
@@ -202,7 +209,7 @@ class ThemeRiverSeriesModel extends SeriesModel<ThemeRiverSeriesOption> {
             }
         });
 
-        const list = new List(dimensionsInfo, this);
+        const list = new SeriesData(dimensions, this);
         list.initData(data);
 
         return list;
@@ -290,9 +297,10 @@ class ThemeRiverSeriesModel extends SeriesModel<ThemeRiverSeriesOption> {
     }
 
     static defaultOption: ThemeRiverSeriesOption = {
-        zlevel: 0,
+        // zlevel: 0,
         z: 2,
 
+        colorBy: 'data',
         coordinateSystem: 'singleAxis',
 
         // gap in axis's orthogonal orientation

@@ -23,9 +23,9 @@
 
 import * as zrUtil from 'zrender/src/core/util';
 import Model from '../model/Model';
-import linkList from './helper/linkList';
-import List from './List';
-import createDimensions from './helper/createDimensions';
+import linkSeriesData from './helper/linkSeriesData';
+import SeriesData from './SeriesData';
+import prepareSeriesDataSchema from './helper/createDimensions';
 import {
     DimensionLoose, ParsedValue, OptionDataValue,
     OptionDataItemObject
@@ -98,15 +98,15 @@ export class TreeNode {
      * @param cb If in preorder and return false,
      *                      its subtree will not be visited.
      */
-    eachNode<Ctx>(options: TreeTraverseOrder, cb: TreeTraverseCallback<Ctx>, context?: Ctx): void
-    eachNode<Ctx>(options: TreeTraverseOption, cb: TreeTraverseCallback<Ctx>, context?: Ctx): void
-    eachNode<Ctx>(cb: TreeTraverseCallback<Ctx>, context?: Ctx): void
+    eachNode<Ctx>(options: TreeTraverseOrder, cb: TreeTraverseCallback<Ctx>, context?: Ctx): void;
+    eachNode<Ctx>(options: TreeTraverseOption, cb: TreeTraverseCallback<Ctx>, context?: Ctx): void;
+    eachNode<Ctx>(cb: TreeTraverseCallback<Ctx>, context?: Ctx): void;
     eachNode<Ctx>(
         options: TreeTraverseOrder | TreeTraverseOption | TreeTraverseCallback<Ctx>,
         cb?: TreeTraverseCallback<Ctx> | Ctx,
         context?: Ctx
     ) {
-        if (typeof options === 'function') {
+        if (zrUtil.isFunction(options)) {
             context = cb as Ctx;
             cb = options;
             options = null;
@@ -210,7 +210,7 @@ export class TreeNode {
 
     getValue(dimension?: DimensionLoose): ParsedValue {
         const data = this.hostTree.data;
-        return data.get(data.getDimension(dimension || 'value'), this.dataIndex);
+        return data.getStore().get(data.getDimensionIndex(dimension || 'value'), this.dataIndex);
     }
 
     setLayout(layout: any, merge?: boolean) {
@@ -225,9 +225,10 @@ export class TreeNode {
         return this.hostTree.data.getItemLayout(this.dataIndex);
     }
 
-    getModel<T = unknown>(): Model<T>
+    getModel<T = unknown>(): Model<T>;
     // @depcrecated
     // getModel<T = unknown, S extends keyof T = keyof T>(path: S): Model<T[S]>
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     getModel<T = unknown>(path?: string): Model {
         if (this.dataIndex < 0) {
             return;
@@ -250,8 +251,8 @@ export class TreeNode {
      *  });
      */
     // TODO: TYPE
-    setVisual(key: string, value: any): void
-    setVisual(obj: Dictionary<any>): void
+    setVisual(key: string, value: any): void;
+    setVisual(obj: Dictionary<any>): void;
     setVisual(key: string | Dictionary<any>, value?: any) {
         this.dataIndex >= 0
             && this.hostTree.data.setItemVisual(this.dataIndex, key as any, value);
@@ -271,6 +272,22 @@ export class TreeNode {
 
     getId(): string {
         return this.hostTree.data.getId(this.dataIndex);
+    }
+
+    /**
+     * index in parent's children
+     */
+    getChildIndex(): number {
+        if (this.parentNode) {
+            const children = this.parentNode.children;
+            for (let i = 0; i < children.length; ++i) {
+                if (children[i] === this) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+        return -1;
     }
 
     /**
@@ -307,7 +324,7 @@ class Tree<HostModel extends Model = Model, LevelOption = any> {
 
     root: TreeNode;
 
-    data: List;
+    data: SeriesData;
 
     hostModel: HostModel;
 
@@ -336,9 +353,9 @@ class Tree<HostModel extends Model = Model, LevelOption = any> {
      * @param cb
      * @param context
      */
-    eachNode<Ctx>(options: TreeTraverseOrder, cb: TreeTraverseCallback<Ctx>, context?: Ctx): void
-    eachNode<Ctx>(options: TreeTraverseOption, cb: TreeTraverseCallback<Ctx>, context?: Ctx): void
-    eachNode<Ctx>(cb: TreeTraverseCallback<Ctx>, context?: Ctx): void
+    eachNode<Ctx>(options: TreeTraverseOrder, cb: TreeTraverseCallback<Ctx>, context?: Ctx): void;
+    eachNode<Ctx>(options: TreeTraverseOption, cb: TreeTraverseCallback<Ctx>, context?: Ctx): void;
+    eachNode<Ctx>(cb: TreeTraverseCallback<Ctx>, context?: Ctx): void;
     eachNode<Ctx>(
         options: TreeTraverseOrder | TreeTraverseOption | TreeTraverseCallback<Ctx>,
         cb?: TreeTraverseCallback<Ctx> | Ctx,
@@ -396,10 +413,10 @@ class Tree<HostModel extends Model = Model, LevelOption = any> {
      *     ]
      * }
      */
-    static createTree<T extends TreeNodeOption, HostModel extends Model, LevelOption>(
+    static createTree<T extends TreeNodeOption, HostModel extends Model>(
         dataRoot: T,
         hostModel: HostModel,
-        beforeLink?: (data: List) => void
+        beforeLink?: (data: SeriesData) => void
     ) {
 
         const tree = new Tree(hostModel);
@@ -431,17 +448,17 @@ class Tree<HostModel extends Model = Model, LevelOption = any> {
 
         tree.root.updateDepthAndHeight(0);
 
-        const dimensionsInfo = createDimensions(listData, {
+        const { dimensions } = prepareSeriesDataSchema(listData, {
             coordDimensions: ['value'],
             dimensionsCount: dimMax
         });
 
-        const list = new List(dimensionsInfo, hostModel);
+        const list = new SeriesData(dimensions, hostModel);
         list.initData(listData);
 
         beforeLink && beforeLink(list);
 
-        linkList({
+        linkSeriesData({
             mainData: list,
             struct: tree,
             structAttr: 'tree'

@@ -17,6 +17,8 @@
 * under the License.
 */
 
+/* global document */
+
 import * as echarts from '../../../core/echarts';
 import * as zrUtil from 'zrender/src/core/util';
 import GlobalModel from '../../../model/Global';
@@ -27,6 +29,9 @@ import ExtensionAPI from '../../../core/ExtensionAPI';
 import { addEventListener } from 'zrender/src/core/event';
 import Axis from '../../../coord/Axis';
 import Cartesian2D from '../../../coord/cartesian/Cartesian2D';
+import { warn } from '../../../util/log';
+import tokens from '../../../visual/tokens';
+import { getCartesianAxisHashKey } from '../../../coord/cartesian/cartesianAxisHelper';
 
 /* global document */
 
@@ -70,10 +75,10 @@ function groupSeries(ecModel: GlobalModel) {
         const coordSys = seriesModel.coordinateSystem;
 
         if (coordSys && (coordSys.type === 'cartesian2d' || coordSys.type === 'polar')) {
-            // TODO: TYPE Consider polar? Include polar may increase unecessary bundle size.
+            // TODO: TYPE Consider polar? Include polar may increase unnecessary bundle size.
             const baseAxis = (coordSys as Cartesian2D).getBaseAxis();
             if (baseAxis.type === 'category') {
-                const key = baseAxis.dim + '_' + baseAxis.index;
+                const key = getCartesianAxisHashKey(baseAxis);
                 if (!seriesGroupByCategoryAxis[key]) {
                     seriesGroupByCategoryAxis[key] = {
                         categoryAxis: baseAxis,
@@ -316,32 +321,40 @@ class DataView extends ToolboxFeature<ToolboxDataViewFeatureOption> {
     private _dom: HTMLDivElement;
 
     onclick(ecModel: GlobalModel, api: ExtensionAPI) {
+        // FIXME: better way?
+        setTimeout(() => {
+            api.dispatchAction({
+                type: 'hideTip'
+            });
+        });
+
         const container = api.getDom();
         const model = this.model;
         if (this._dom) {
             container.removeChild(this._dom);
         }
         const root = document.createElement('div');
-        root.style.cssText = 'position:absolute;left:5px;top:5px;bottom:5px;right:5px;';
-        root.style.backgroundColor = model.get('backgroundColor') || '#fff';
+        // use padding to avoid 5px whitespace
+        root.style.cssText = 'position:absolute;top:0;bottom:0;left:0;right:0;padding:5px';
+        root.style.backgroundColor = model.get('backgroundColor') || tokens.color.neutral00;
 
         // Create elements
         const header = document.createElement('h4');
         const lang = model.get('lang') || [];
         header.innerHTML = lang[0] || model.get('title');
-        header.style.cssText = 'margin: 10px 20px;';
+        header.style.cssText = 'margin:10px 20px';
         header.style.color = model.get('textColor');
 
         const viewMain = document.createElement('div');
         const textarea = document.createElement('textarea');
-        viewMain.style.cssText = 'display:block;width:100%;overflow:auto;';
+        viewMain.style.cssText = 'overflow:auto';
 
         const optionToContent = model.get('optionToContent');
         const contentToOption = model.get('contentToOption');
         const result = getContentFromModel(ecModel);
-        if (typeof optionToContent === 'function') {
+        if (zrUtil.isFunction(optionToContent)) {
             const htmlOrDom = optionToContent(api.getOption());
-            if (typeof htmlOrDom === 'string') {
+            if (zrUtil.isString(htmlOrDom)) {
                 viewMain.innerHTML = htmlOrDom;
             }
             else if (zrUtil.isDom(htmlOrDom)) {
@@ -350,22 +363,24 @@ class DataView extends ToolboxFeature<ToolboxDataViewFeatureOption> {
         }
         else {
             // Use default textarea
-            viewMain.appendChild(textarea);
             textarea.readOnly = model.get('readOnly');
-            textarea.style.cssText = 'width:100%;height:100%;font-family:monospace;font-size:14px;line-height:1.6rem;';
-            textarea.style.color = model.get('textColor');
-            textarea.style.borderColor = model.get('textareaBorderColor');
-            textarea.style.backgroundColor = model.get('textareaColor');
+            const style = textarea.style;
+            // eslint-disable-next-line max-len
+            style.cssText = 'display:block;width:100%;height:100%;font-family:monospace;font-size:14px;line-height:1.6rem;resize:none;box-sizing:border-box;outline:none';
+            style.color = model.get('textColor');
+            style.borderColor = model.get('textareaBorderColor');
+            style.backgroundColor = model.get('textareaColor');
             textarea.value = result.value;
+            viewMain.appendChild(textarea);
         }
 
         const blockMetaList = result.meta;
 
         const buttonContainer = document.createElement('div');
-        buttonContainer.style.cssText = 'position:absolute;bottom:0;left:0;right:0;';
+        buttonContainer.style.cssText = 'position:absolute;bottom:5px;left:0;right:0';
 
-        let buttonStyle = 'float:right;margin-right:20px;border:none;'
-            + 'cursor:pointer;padding:2px 5px;font-size:12px;border-radius:3px';
+        // eslint-disable-next-line max-len
+        let buttonStyle = 'float:right;margin-right:20px;border:none;cursor:pointer;padding:2px 5px;font-size:12px;border-radius:3px';
         const closeButton = document.createElement('div');
         const refreshButton = document.createElement('div');
 
@@ -385,7 +400,7 @@ class DataView extends ToolboxFeature<ToolboxDataViewFeatureOption> {
                 || (contentToOption != null && optionToContent == null)) {
                 if (__DEV__) {
                     // eslint-disable-next-line
-                    console.warn('It seems you have just provided one of `contentToOption` and `optionToContent` functions but missed the other one. Data change is ignored.')
+                    warn('It seems you have just provided one of `contentToOption` and `optionToContent` functions but missed the other one. Data change is ignored.')
                 }
                 close();
                 return;
@@ -393,7 +408,7 @@ class DataView extends ToolboxFeature<ToolboxDataViewFeatureOption> {
 
             let newOption;
             try {
-                if (typeof contentToOption === 'function') {
+                if (zrUtil.isFunction(contentToOption)) {
                     newOption = contentToOption(viewMain, api.getOption());
                 }
                 else {
@@ -416,7 +431,7 @@ class DataView extends ToolboxFeature<ToolboxDataViewFeatureOption> {
 
         closeButton.innerHTML = lang[1];
         refreshButton.innerHTML = lang[2];
-        refreshButton.style.cssText = buttonStyle;
+        refreshButton.style.cssText =
         closeButton.style.cssText = buttonStyle;
 
         !model.get('readOnly') && buttonContainer.appendChild(refreshButton);
@@ -432,12 +447,8 @@ class DataView extends ToolboxFeature<ToolboxDataViewFeatureOption> {
         this._dom = root;
     }
 
-    remove(ecModel: GlobalModel, api: ExtensionAPI) {
-        this._dom && api.getDom().removeChild(this._dom);
-    }
-
     dispose(ecModel: GlobalModel, api: ExtensionAPI) {
-        this.remove(ecModel, api);
+        this._dom && api.getDom().removeChild(this._dom);
     }
 
     static getDefaultOption(ecModel: GlobalModel) {
@@ -449,14 +460,14 @@ class DataView extends ToolboxFeature<ToolboxDataViewFeatureOption> {
 
             // eslint-disable-next-line
             icon: 'M17.5,17.3H33 M17.5,17.3H33 M45.4,29.5h-28 M11.5,2v56H51V14.8L38.4,2H11.5z M38.4,2.2v12.7H51 M45.4,41.7h-28',
-            title: ecModel.getLocale(['toolbox', 'dataView', 'title']),
-            lang: ecModel.getLocale(['toolbox', 'dataView', 'lang']),
-            backgroundColor: '#fff',
-            textColor: '#000',
-            textareaColor: '#fff',
-            textareaBorderColor: '#333',
-            buttonColor: '#c23531',
-            buttonTextColor: '#fff'
+            title: ecModel.getLocaleModel().get(['toolbox', 'dataView', 'title']),
+            lang: ecModel.getLocaleModel().get(['toolbox', 'dataView', 'lang']),
+            backgroundColor: tokens.color.background,
+            textColor: tokens.color.primary,
+            textareaColor: tokens.color.background,
+            textareaBorderColor: tokens.color.border,
+            buttonColor: tokens.color.accent50,
+            buttonTextColor: tokens.color.neutral00
         };
 
         return defaultOption;

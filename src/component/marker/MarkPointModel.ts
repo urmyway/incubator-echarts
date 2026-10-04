@@ -24,7 +24,8 @@ import {
     ItemStyleOption,
     SeriesLabelOption,
     CallbackDataParams,
-    StatesOptionMixin
+    StatesOptionMixin,
+    StatesMixinBase
 } from '../../util/types';
 
 // interface MarkPointCallbackDataParams extends CallbackDataParams {
@@ -35,9 +36,10 @@ import {
 interface MarkPointStateOption {
     itemStyle?: ItemStyleOption
     label?: SeriesLabelOption
+    z2?: number
 }
 export interface MarkPointDataItemOption extends
-    MarkPointStateOption, StatesOptionMixin<MarkPointStateOption>,
+    MarkPointStateOption, StatesOptionMixin<MarkPointStateOption, StatesMixinBase>,
     // TODO should not support callback in data
     SymbolOptionMixin<CallbackDataParams>,
     MarkerPositionOption {
@@ -46,7 +48,7 @@ export interface MarkPointDataItemOption extends
 
 export interface MarkPointOption extends MarkerOption,
     SymbolOptionMixin<CallbackDataParams>,
-    StatesOptionMixin<MarkPointStateOption>, MarkPointStateOption {
+    StatesOptionMixin<MarkPointStateOption, StatesMixinBase>, MarkPointStateOption {
     mainType?: 'markPoint'
 
     precision?: number
@@ -68,12 +70,12 @@ class MarkPointModel extends MarkerModel<MarkPointOption> {
     }
 
     static defaultOption: MarkPointOption = {
-        zlevel: 0,
+        // zlevel: 0,
         z: 5,
         symbol: 'pin',
         symbolSize: 50,
-        //symbolRotate: 0,
-        //symbolOffset: [0, 0]
+        // symbolRotate: 0,
+        // symbolOffset: [0, 0]
         tooltip: {
             trigger: 'item'
         },

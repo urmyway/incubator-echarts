@@ -18,7 +18,7 @@
 */
 
 import * as graphic from '../../util/graphic';
-import { enableHoverEmphasis } from '../../util/states';
+import { toggleHoverEmphasis } from '../../util/states';
 import HeatmapLayer from './HeatmapLayer';
 import * as zrUtil from 'zrender/src/core/util';
 import ChartView from '../../view/Chart';
@@ -28,17 +28,16 @@ import type ExtensionAPI from '../../core/ExtensionAPI';
 import type VisualMapModel from '../../component/visualMap/VisualMapModel';
 import type PiecewiseModel from '../../component/visualMap/PiecewiseModel';
 import type ContinuousModel from '../../component/visualMap/ContinuousModel';
-import { CoordinateSystem, isCoordinateSystemType } from '../../coord/CoordinateSystem';
+import { GeoLikeCoordSys, isCoordinateSystemType, isGeoLikeCoordSys } from '../../coord/CoordinateSystem';
 import { StageHandlerProgressParams, Dictionary, OptionDataValue } from '../../util/types';
 import type Cartesian2D from '../../coord/cartesian/Cartesian2D';
 import type Calendar from '../../coord/calendar/Calendar';
 import { setLabelStyle, getLabelStatesModels } from '../../label/labelStyle';
+import type Element from 'zrender/src/Element';
+import type Matrix from '../../coord/matrix/Matrix';
+import { calcBandWidth } from '../../coord/axisBand';
+import { getIncrementalId } from '../../util/model';
 
-// Coord can be 'geo' 'bmap' 'amap' 'leaflet'...
-interface GeoLikeCoordSys extends CoordinateSystem {
-    dimensions: ['lng', 'lat']
-    getViewRect(): graphic.BoundingRect
-}
 
 function getIsInPiecewiseRange(
     dataExtent: number[],
@@ -91,20 +90,14 @@ function getIsInContinuousRange(dataExtent: number[], range: number[]) {
     };
 }
 
-function isGeoCoordSys(coordSys: CoordinateSystem): coordSys is GeoLikeCoordSys {
-    const dimensions = coordSys.dimensions;
-    // Not use coorSys.type === 'geo' because coordSys maybe extended
-    return dimensions[0] === 'lng' && dimensions[1] === 'lat';
-}
-
 class HeatmapView extends ChartView {
 
     static readonly type = 'heatmap';
     readonly type = HeatmapView.type;
 
-    private _incrementalDisplayable: boolean;
-
     private _hmLayer: HeatmapLayer;
+
+    private _progressiveEls: Element[];
 
     render(seriesModel: HeatmapSeriesModel, ecModel: GlobalModel, api: ExtensionAPI) {
         let visualMapOfThisSeries;
@@ -122,15 +115,19 @@ class HeatmapView extends ChartView {
             }
         }
 
+        // Clear previously rendered progressive elements.
+        this._progressiveEls = null;
+
         this.group.removeAll();
 
-        this._incrementalDisplayable = null;
-
         const coordSys = seriesModel.coordinateSystem;
-        if (coordSys.type === 'cartesian2d' || coordSys.type === 'calendar') {
-            this._renderOnCartesianAndCalendar(seriesModel, api, 0, seriesModel.getData().count());
+        if (coordSys.type === 'cartesian2d'
+            || coordSys.type === 'calendar'
+            || coordSys.type === 'matrix'
+        ) {
+            this._renderOnGridLike(seriesModel, api, 0, seriesModel.getData().count());
         }
-        else if (isGeoCoordSys(coordSys)) {
+        else if (isGeoLikeCoordSys(coordSys)) {
             this._renderOnGeo(
                 coordSys, seriesModel, visualMapOfThisSeries, api
             );
@@ -150,30 +147,36 @@ class HeatmapView extends ChartView {
         const coordSys = seriesModel.coordinateSystem;
         if (coordSys) {
             // geo does not support incremental rendering?
-            if (isGeoCoordSys(coordSys)) {
+            if (isGeoLikeCoordSys(coordSys)) {
                 this.render(seriesModel, ecModel, api);
             }
             else {
-                this._renderOnCartesianAndCalendar(seriesModel, api, params.start, params.end, true);
+                this._progressiveEls = [];
+                this._renderOnGridLike(seriesModel, api, params.start, params.end, true);
             }
         }
     }
 
-    _renderOnCartesianAndCalendar(
+    eachRendered(cb: (el: Element) => boolean | void) {
+        graphic.traverseElements(this._progressiveEls || this.group, cb);
+    }
+
+    _renderOnGridLike(
         seriesModel: HeatmapSeriesModel,
         api: ExtensionAPI,
         start: number,
         end: number,
-        incremental?: boolean
+        useIncremental?: boolean
     ) {
-
-        const coordSys = seriesModel.coordinateSystem as Cartesian2D | Calendar;
+        const coordSys = seriesModel.coordinateSystem as Cartesian2D | Calendar | Matrix;
+        const isCartesian2d = isCoordinateSystemType<Cartesian2D>(coordSys, 'cartesian2d');
+        const isMatrix = isCoordinateSystemType<Matrix>(coordSys, 'matrix');
         let width;
         let height;
         let xAxisExtent;
         let yAxisExtent;
 
-        if (isCoordinateSystemType<Cartesian2D>(coordSys, 'cartesian2d')) {
+        if (isCartesian2d) {
             const xAxis = coordSys.getAxis('x');
             const yAxis = coordSys.getAxis('y');
 
@@ -186,8 +189,9 @@ class HeatmapView extends ChartView {
                 }
             }
 
-            width = xAxis.getBandWidth();
-            height = yAxis.getBandWidth();
+            // add 0.5px to avoid the gaps
+            width = calcBandWidth(xAxis).w + .5;
+            height = calcBandWidth(yAxis).w + .5;
             xAxisExtent = xAxis.scale.getExtent();
             yAxisExtent = yAxis.scale.getExtent();
         }
@@ -198,11 +202,14 @@ class HeatmapView extends ChartView {
         let emphasisStyle = seriesModel.getModel(['emphasis', 'itemStyle']).getItemStyle();
         let blurStyle = seriesModel.getModel(['blur', 'itemStyle']).getItemStyle();
         let selectStyle = seriesModel.getModel(['select', 'itemStyle']).getItemStyle();
+        let borderRadius = seriesModel.get(['itemStyle', 'borderRadius']);
         let labelStatesModels = getLabelStatesModels(seriesModel);
-        let focus = seriesModel.get(['emphasis', 'focus']);
-        let blurScope = seriesModel.get(['emphasis', 'blurScope']);
+        const emphasisModel = seriesModel.getModel('emphasis');
+        let focus = emphasisModel.get('focus');
+        let blurScope = emphasisModel.get('blurScope');
+        let emphasisDisabled = emphasisModel.get('disabled');
 
-        const dataDims = isCoordinateSystemType<Cartesian2D>(coordSys, 'cartesian2d')
+        const dataDims = (isCartesian2d || isMatrix)
             ? [
                 data.mapDimension('x'),
                 data.mapDimension('y'),
@@ -217,16 +224,18 @@ class HeatmapView extends ChartView {
             let rect;
             const style = data.getItemVisual(idx, 'style');
 
-            if (isCoordinateSystemType<Cartesian2D>(coordSys, 'cartesian2d')) {
+            if (isCartesian2d) {
                 const dataDimX = data.get(dataDims[0], idx);
                 const dataDimY = data.get(dataDims[1], idx);
 
                 // Ignore empty data and out of extent data
                 if (isNaN(data.get(dataDims[2], idx) as number)
-                    || dataDimX < xAxisExtent[0]
-                    || dataDimX > xAxisExtent[1]
-                    || dataDimY < yAxisExtent[0]
-                    || dataDimY > yAxisExtent[1]
+                    || isNaN(dataDimX as number)
+                    || isNaN(dataDimY as number)
+                    || (dataDimX as number) < xAxisExtent[0]
+                    || (dataDimX as number) > xAxisExtent[1]
+                    || (dataDimY as number) < yAxisExtent[0]
+                    || (dataDimY as number) > yAxisExtent[1]
                 ) {
                     continue;
                 }
@@ -238,41 +247,68 @@ class HeatmapView extends ChartView {
 
                 rect = new graphic.Rect({
                     shape: {
-                        x: Math.floor(Math.round(point[0]) - width / 2),
-                        y: Math.floor(Math.round(point[1]) - height / 2),
-                        width: Math.ceil(width),
-                        height: Math.ceil(height)
+                        x: point[0] - width / 2,
+                        y: point[1] - height / 2,
+                        width,
+                        height
                     },
                     style
                 });
             }
-            else {
+            else if (isMatrix) {
+                const shape = coordSys.dataToLayout([
+                    data.get(dataDims[0], idx),
+                    data.get(dataDims[1], idx)
+                ]).rect;
+                if (zrUtil.eqNaN(shape.x)) {
+                    continue;
+                }
+                rect = new graphic.Rect({
+                    z2: 1,
+                    shape,
+                    style,
+                });
+            }
+            else { // Calendar
                 // Ignore empty data
                 if (isNaN(data.get(dataDims[1], idx) as number)) {
                     continue;
                 }
-
+                const layout = coordSys.dataToLayout([data.get(dataDims[0], idx)]);
+                const shape = layout.contentRect || layout.rect;
+                if (zrUtil.eqNaN(shape.x) || zrUtil.eqNaN(shape.y)) {
+                    continue;
+                }
                 rect = new graphic.Rect({
                     z2: 1,
-                    shape: coordSys.dataToRect([data.get(dataDims[0], idx)]).contentShape,
-                    style
+                    shape,
+                    style,
                 });
             }
 
-            const itemModel = data.getItemModel<HeatmapDataItemOption>(idx);
-
-            // Optimization for large datset
+            // Optimization for large dataset
             if (data.hasItemOption) {
+                const itemModel = data.getItemModel<HeatmapDataItemOption>(idx);
                 const emphasisModel = itemModel.getModel('emphasis');
                 emphasisStyle = emphasisModel.getModel('itemStyle').getItemStyle();
                 blurStyle = itemModel.getModel(['blur', 'itemStyle']).getItemStyle();
                 selectStyle = itemModel.getModel(['select', 'itemStyle']).getItemStyle();
 
+                // Each item value struct in the data would be firstly
+                // {
+                //     itemStyle: { borderRadius: [30, 30] },
+                //     value: [2022, 02, 22]
+                // }
+                borderRadius = itemModel.get(['itemStyle', 'borderRadius']);
+
                 focus = emphasisModel.get('focus');
                 blurScope = emphasisModel.get('blurScope');
+                emphasisDisabled = emphasisModel.get('disabled');
 
                 labelStatesModels = getLabelStatesModels(itemModel);
             }
+
+            rect.shape.r = borderRadius;
 
             const rawValue = seriesModel.getRawValue(idx) as OptionDataValue[];
             let defaultText = '-';
@@ -294,17 +330,21 @@ class HeatmapView extends ChartView {
             rect.ensureState('blur').style = blurStyle;
             rect.ensureState('select').style = selectStyle;
 
-            enableHoverEmphasis(rect, focus, blurScope);
+            toggleHoverEmphasis(rect, focus, blurScope, emphasisDisabled);
 
-            rect.incremental = incremental;
+            rect.incremental = getIncrementalId(seriesModel, useIncremental);
             // PENDING
-            if (incremental) {
+            if (useIncremental) {
                 // Rect must use hover layer if it's incremental.
-                rect.states.emphasis.hoverLayer = true;
+                rect.states.emphasis.hoverLayer = graphic.HOVER_LAYER_FOR_INCREMENTAL;
             }
 
             group.add(rect);
             data.setItemGraphicEl(idx, rect);
+
+            if (this._progressiveEls) {
+                this._progressiveEls.push(rect);
+            }
         }
     }
 

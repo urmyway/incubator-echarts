@@ -19,7 +19,7 @@
 
 import * as zrUtil from 'zrender/src/core/util';
 import { Dictionary } from 'zrender/src/core/types';
-import List from './List';
+import SeriesData from './SeriesData';
 import Model from '../model/Model';
 import Element from 'zrender/src/Element';
 import { DimensionLoose, ParsedValue } from '../util/types';
@@ -36,9 +36,9 @@ class Graph {
 
     readonly edges: GraphEdge[] = [];
 
-    data: List;
+    data: SeriesData;
 
-    edgeData: List;
+    edgeData: SeriesData;
 
     /**
      * Whether directed graph.
@@ -109,11 +109,11 @@ class Graph {
         const nodesMap = this._nodesMap;
         const edgesMap = this._edgesMap;
 
-        // PNEDING
-        if (typeof n1 === 'number') {
+        // PENDING
+        if (zrUtil.isNumber(n1)) {
             n1 = this.nodes[n1];
         }
-        if (typeof n2 === 'number') {
+        if (zrUtil.isNumber(n2)) {
             n2 = this.nodes[n2];
         }
 
@@ -360,8 +360,8 @@ class GraphNode {
     }
 
     // TODO: TYPE Same type with Model#getModel
-    getModel<T = unknown>(): Model<T>
-    getModel<T = unknown, S extends keyof T= keyof T>(path: S): Model<T[S]>
+    getModel<T = unknown>(): Model<T>;
+    getModel<T = unknown, S extends keyof T= keyof T>(path: S): Model<T[S]>;
     getModel<T = unknown>(path?: string): Model {
         if (this.dataIndex < 0) {
             return;
@@ -387,6 +387,62 @@ class GraphNode {
         }
         return dataIndices;
     }
+
+    getTrajectoryDataIndices(): {node: number[], edge: number[]} {
+        const connectedEdgesMap = zrUtil.createHashMap<boolean, number>();
+        const connectedNodesMap = zrUtil.createHashMap<boolean, number>();
+
+        for (let i = 0, len = this.edges.length; i < len; i++) {
+            const adjacentEdge = this.edges[i];
+            if (adjacentEdge.dataIndex < 0) {
+                continue;
+            }
+
+            connectedEdgesMap.set(adjacentEdge.dataIndex, true);
+
+            const sourceNodesQueue = [adjacentEdge.node1];
+            const targetNodesQueue = [adjacentEdge.node2];
+
+            let nodeIteratorIndex = 0;
+            while (nodeIteratorIndex < sourceNodesQueue.length) {
+                const sourceNode = sourceNodesQueue[nodeIteratorIndex];
+                nodeIteratorIndex++;
+                connectedNodesMap.set(sourceNode.dataIndex, true);
+
+                const sourceNodeInEdges = sourceNode.inEdges;
+                for (let j = 0, len = sourceNodeInEdges.length, inEdge, inEdgeDataIndex; j < len; j++) {
+                    inEdge = sourceNodeInEdges[j];
+                    inEdgeDataIndex = inEdge.dataIndex;
+                    if (inEdgeDataIndex >= 0 && !connectedEdgesMap.hasKey(inEdgeDataIndex)) {
+                        connectedEdgesMap.set(inEdgeDataIndex, true);
+                        sourceNodesQueue.push(inEdge.node1);
+                    }
+                }
+            }
+
+            nodeIteratorIndex = 0;
+            while (nodeIteratorIndex < targetNodesQueue.length) {
+                const targetNode = targetNodesQueue[nodeIteratorIndex];
+                nodeIteratorIndex++;
+                connectedNodesMap.set(targetNode.dataIndex, true);
+
+                const targetNodeOutEdges = targetNode.outEdges;
+                for (let j = 0, len = targetNodeOutEdges.length, outEdge, outEdgeDataIndex; j < len; j++) {
+                    outEdge = targetNodeOutEdges[j];
+                    outEdgeDataIndex = outEdge.dataIndex;
+                    if (outEdgeDataIndex >= 0 && !connectedEdgesMap.hasKey(outEdgeDataIndex)) {
+                        connectedEdgesMap.set(outEdgeDataIndex, true);
+                        targetNodesQueue.push(outEdge.node2);
+                    }
+                }
+            }
+        }
+
+        return {
+            edge: connectedEdgesMap.keys(),
+            node: connectedNodesMap.keys()
+        };
+    }
 }
 
 
@@ -410,8 +466,9 @@ class GraphEdge {
         this.dataIndex = dataIndex == null ? -1 : dataIndex;
     }
 
-    getModel<T = unknown>(): Model<T>
-    getModel<T = unknown, S extends keyof T= keyof T>(path: S): Model<T[S]>
+    getModel<T = unknown>(): Model<T>;
+    getModel<T = unknown, S extends keyof T= keyof T>(path: S): Model<T[S]>;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     getModel<T = unknown>(path?: string): Model {
         if (this.dataIndex < 0) {
             return;
@@ -426,6 +483,57 @@ class GraphEdge {
         return {
             edge: [this.dataIndex],
             node: [this.node1.dataIndex, this.node2.dataIndex]
+        };
+    }
+
+    getTrajectoryDataIndices(): {node: number[], edge: number[]} {
+        const connectedEdgesMap = zrUtil.createHashMap<boolean, number>();
+        const connectedNodesMap = zrUtil.createHashMap<boolean, number>();
+
+        connectedEdgesMap.set(this.dataIndex, true);
+
+        const sourceNodes = [this.node1];
+        const targetNodes = [this.node2];
+
+        let nodeIteratorIndex = 0;
+        while (nodeIteratorIndex < sourceNodes.length) {
+            const sourceNode = sourceNodes[nodeIteratorIndex];
+            nodeIteratorIndex++;
+
+            connectedNodesMap.set(sourceNode.dataIndex, true);
+
+            const sourceNodeInEdges = sourceNode.inEdges;
+            for (let j = 0, len = sourceNodeInEdges.length, inEdge, inEdgeDataIndex; j < len; j++) {
+                inEdge = sourceNode.inEdges[j];
+                inEdgeDataIndex = inEdge.dataIndex;
+                if (inEdgeDataIndex >= 0 && !connectedEdgesMap.hasKey(inEdgeDataIndex)) {
+                    connectedEdgesMap.set(inEdgeDataIndex, true);
+                    sourceNodes.push(inEdge.node1);
+                }
+            }
+        }
+
+        nodeIteratorIndex = 0;
+        while (nodeIteratorIndex < targetNodes.length) {
+            const targetNode = targetNodes[nodeIteratorIndex];
+            nodeIteratorIndex++;
+
+            connectedNodesMap.set(targetNode.dataIndex, true);
+
+            const targetNodeOutEdges = targetNode.outEdges;
+            for (let j = 0, len = targetNodeOutEdges.length, outEdge, outEdgeDataIndex; j < len; j++) {
+                outEdge = targetNode.outEdges[j];
+                outEdgeDataIndex = outEdge.dataIndex;
+                if (outEdgeDataIndex >= 0 && !connectedEdgesMap.hasKey(outEdgeDataIndex)) {
+                    connectedEdgesMap.set(outEdgeDataIndex, true);
+                    targetNodes.push(outEdge.node2);
+                }
+            }
+        }
+
+        return {
+            edge: connectedEdgesMap.keys(),
+            node: connectedNodesMap.keys()
         };
     }
 }
@@ -458,7 +566,7 @@ function createGraphDataProxyMixin<Host extends GraphEdge | GraphNode>(
          */
         getValue(this: Host, dimension?: DimensionLoose): ParsedValue {
             const data = this[hostName][dataName];
-            return data.get(data.getDimension(dimension || 'value'), this.dataIndex);
+            return data.getStore().get(data.getDimensionIndex(dimension || 'value'), this.dataIndex);
         },
         // TODO: TYPE stricter type.
         setVisual(this: Host, key: string | Dictionary<any>, value?: any) {

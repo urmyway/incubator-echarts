@@ -17,17 +17,26 @@
 * under the License.
 */
 
-import { ComponentOption, CircleLayoutOptionMixin } from '../../util/types';
+import {
+    ComponentOption, CircleLayoutOptionMixin, ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin
+} from '../../util/types';
 import ComponentModel from '../../model/Component';
-import Polar from './Polar';
+import type Polar from './Polar';
 import { AngleAxisModel, RadiusAxisModel } from './AxisModel';
 
-export interface PolarOption extends ComponentOption, CircleLayoutOptionMixin {
+export interface PolarOption extends
+    ComponentOption, CircleLayoutOptionMixin,
+    ComponentOnCalendarOptionMixin, ComponentOnMatrixOptionMixin {
+
     mainType?: 'polar';
 }
 
+export const COORD_SYS_TYPE_POLAR = 'polar';
+export const COMPONENT_TYPE_POLAR = COORD_SYS_TYPE_POLAR;
+
 class PolarModel extends ComponentModel<PolarOption> {
-    static type = 'polar' as const;
+    static type = COORD_SYS_TYPE_POLAR;
     type = PolarModel.type;
 
     static dependencies = ['radiusAxis', 'angleAxis'];
@@ -50,7 +59,7 @@ class PolarModel extends ComponentModel<PolarOption> {
 
     static defaultOption: PolarOption = {
 
-        zlevel: 0,
+        // zlevel: 0,
 
         z: 0,
 

@@ -20,13 +20,16 @@
 import GlobalModel from '../model/Global';
 import {ParsedModelFinder} from '../util/model';
 import ExtensionAPI from '../core/ExtensionAPI';
-import { DimensionDefinitionLoose, ScaleDataValue, DimensionName } from '../util/types';
+import {
+    DimensionDefinitionLoose, ScaleDataValue, DimensionName, NullUndefined, CoordinateSystemDataLayout,
+    CoordinateSystemDataCoord
+} from '../util/types';
 import Axis from './Axis';
 import { BoundingRect } from '../util/graphic';
 import { MatrixArray } from 'zrender/src/core/matrix';
 import ComponentModel from '../model/Component';
 import { RectLike } from 'zrender/src/core/BoundingRect';
-import type { PrepareCustomInfo } from '../chart/custom/install';
+import type { PrepareCustomInfo } from '../chart/custom/CustomSeries';
 
 
 export interface CoordinateSystemCreator {
@@ -45,6 +48,8 @@ export interface CoordinateSystemCreator {
 
 /**
  * The instance get from `CoordinateSystemManger` is `CoordinateSystemMaster`.
+ * Consider a typical case: `grid` is a `CoordinateSystemMaster`, and it contains
+ * one or multiple `cartesian2d`s, which are `CoordinateSystem`s.
  */
 export interface CoordinateSystemMaster {
 
@@ -55,23 +60,45 @@ export interface CoordinateSystemMaster {
 
     model?: ComponentModel;
 
+    // Injected if required.
+    boxCoordinateSystem?: CoordinateSystem;
+
     update?: (ecModel: GlobalModel, api: ExtensionAPI) => void;
 
-    // This methods is also responsible for determine whether this
-    // coodinate system is applicable to the given `finder`.
-    // Each coordinate system will be tried, util one returns none
+    // This methods is also responsible for determining whether this
+    // coordinate system is applicable to the given `finder`.
+    // Each coordinate system will be tried, until one returns non-
     // null/undefined value.
+    // Aslo support
+    //  const resultNumber = convertToPixel({someAxis: 0}, number);
     convertToPixel?(
-        ecModel: GlobalModel, finder: ParsedModelFinder, value: ScaleDataValue | ScaleDataValue[]
-    ): number | number[];
+        ecModel: GlobalModel,
+        finder: ParsedModelFinder,
+        value: Parameters<CoordinateSystem['dataToPoint']>[0],
+        opt?: unknown
+    ): ReturnType<CoordinateSystem['dataToPoint']> | number | NullUndefined;
 
-    // This methods is also responsible for determine whether this
-    // coodinate system is applicable to the given `finder`.
-    // Each coordinate system will be tried, util one returns none
+    // This methods is also responsible for determining whether this
+    // coordinate system is applicable to the given `finder`.
+    // Each coordinate system will be tried, until one returns non-
+    // null/undefined value.
+    convertToLayout?(
+        ecModel: GlobalModel,
+        finder: ParsedModelFinder,
+        value: Parameters<NonNullable<CoordinateSystem['dataToLayout']>>[0],
+        opt?: unknown
+    ): ReturnType<NonNullable<CoordinateSystem['dataToLayout']>> | NullUndefined;
+
+    // This methods is also responsible for determining whether this
+    // coordinate system is applicable to the given `finder`.
+    // Each coordinate system will be tried, until one returns non-
     // null/undefined value.
     convertFromPixel?(
-        ecModel: GlobalModel, finder: ParsedModelFinder, pixelValue: number | number[]
-    ): number | number[];
+        ecModel: GlobalModel,
+        finder: ParsedModelFinder,
+        pixelValue: Parameters<NonNullable<CoordinateSystem['pointToData']>>[0],
+        opt?: unknown
+    ): ReturnType<NonNullable<CoordinateSystem['pointToData']>> | NullUndefined;
 
     // @param point Point in global pixel coordinate system.
     // The signature of this method should be the same as `CoordinateSystemExecutive`
@@ -113,45 +140,90 @@ export interface CoordinateSystem {
     /**
      * @param data
      * @param reserved Defined by the coordinate system itself
-     * @param out
-     * @return {Array.<number>} point Point in global pixel coordinate system.
+     * @param out Fill it if passing, and return. For performance optimization.
+     * @return Point in global pixel coordinate system.
+     *  An invalid returned point should be represented by `[NaN, NaN]`,
+     *  rather than `null/undefined`.
      */
     dataToPoint(
-        data: ScaleDataValue | ScaleDataValue[],
-        reserved?: any,
+        data: CoordinateSystemDataCoord,
+        opt?: unknown,
         out?: number[]
     ): number[];
+
+    /**
+     * @param data See the meaning in `dataToPoint`.
+     * @param reserved Defined by the coordinate system itself
+     * @param out Fill it if passing, and return. For performance optimization. Vary by different coord sys.
+     * @return Layout in global pixel coordinate system.
+     *  An invalid returned rect should be represented by `{x: NaN, y: NaN, width: NaN, height: NaN}`,
+     *  Never return `null/undefined`.
+     */
+    dataToLayout?(
+        data: CoordinateSystemDataCoord,
+        opt?: unknown,
+        out?: CoordinateSystemDataLayout
+    ): CoordinateSystemDataLayout;
 
     /**
      * Some coord sys (like Parallel) might do not have `pointToData`,
      * or the meaning of this kind of features is not clear yet.
      * @param point point Point in global pixel coordinate system.
-     * @param clamp Clamp range
+     * @param out Fill it if passing, and return. For performance optimization.
      * @return data
+     *  An invalid returned data should be represented by `[NaN, NaN]` or `NaN`,
+     *  rather than `null/undefined`, which represents not-applicable in `convertFromPixel`.
+     *  Return `OrdinalNumber` in ordianal (category axis) case.
+     *  Return timestamp in time axis.
      */
     pointToData?(
         point: number[],
-        clamp?: boolean
+        opt?: unknown,
+        out?: number | number[]
     ): number | number[];
 
     // @param point Point in global pixel coordinate system.
     containPoint(point: number[]): boolean;
 
+    getAxes?: () => Axis[];
+
     getAxis?: (dim?: DimensionName) => Axis;
 
+    /**
+     * FIXME: Remove this method? See details in `Cartesian2D['getBaseAxis']`
+     */
     getBaseAxis?: () => Axis;
 
     getOtherAxis?: (baseAxis: Axis) => Axis;
 
     clampData?: (data: ScaleDataValue[], out?: number[]) => number[];
 
-    getRoamTransform?: () => MatrixArray;
 
-    getArea?: () => CoordinateSystemClipArea
+    getArea?: (tolerance?: number) => CoordinateSystemClipArea;
 
-    // Only `coord/View.js` implements `getBoundingRect`.
-    // But if other coord sys implement it, should follow this signature.
+    shouldClip?: () => boolean;
+
+    /**
+     * Optional; e.g. only for `GeoLikeCoordSys`.
+     * External geo like extensions are required to implements it.
+     * This is a rect in data space.
+     * For historicall reason, the name is `getBoundingRect` - preserve it for backward compatibility.
+     * @see VIEW_COORD_SYS_TRANS_RAW
+     */
     getBoundingRect?: () => BoundingRect;
+
+    /**
+     * Optional; e.g. only for `GeoLikeCoordSys`.
+     * External geo like extensions are required to implements it.
+     * @see VIEW_COORD_SYS_TRANS_RAW
+     */
+    getViewRect?: () => BoundingRect;
+
+    /**
+     * Optional; e.g. only for `GeoLikeCoordSys`.
+     * External geo like extensions are required to implements it.
+     */
+    getRoamTransform?: () => MatrixArray;
 
     // Currently only Cartesian2D implements it.
     // But if other coordinate systems implement it, should follow this signature.
@@ -172,11 +244,28 @@ export interface CoordinateSystemHostModel extends ComponentModel {
  * It is used to clip the graphic elements with the contain methods.
  */
 export interface CoordinateSystemClipArea {
-    contain(x: number, y: number): boolean
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    contain(x: number, y: number): boolean;
 }
 
 export function isCoordinateSystemType<T extends CoordinateSystem, S = T['type']>(
     coordSys: CoordinateSystem, type: S
 ): coordSys is T {
     return (coordSys.type as unknown as S) === type;
+}
+
+// Coord sys can be 'geo' 'bmap' 'amap' 'gmap' 'leaflet' ...
+export interface GeoLikeCoordSys extends CoordinateSystem {
+    dimensions: ['lng', 'lat']
+    getViewRect: CoordinateSystem['getViewRect'] // Mandatory (e.g., for heatmap)
+    // PENDING: also check `getBoundingRect` and `getRoamTransform`?
+}
+
+export function isGeoLikeCoordSys(coordSys: CoordinateSystem): coordSys is GeoLikeCoordSys {
+    const dimensions = coordSys.dimensions;
+    // Not use coordSys.type === 'geo' because coordSys maybe extended
+    return dimensions[0] === 'lng' && dimensions[1] === 'lat' && !!coordSys.getViewRect;
 }

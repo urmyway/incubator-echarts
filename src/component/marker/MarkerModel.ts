@@ -28,11 +28,13 @@ import {
     AnimationOptionMixin,
     Dictionary,
     CommonTooltipOption,
-    ScaleDataValue
+    ScaleDataValue,
+    CallbackDataParams,
+    SeriesDataType
 } from '../../util/types';
 import Model from '../../model/Model';
 import GlobalModel from '../../model/Global';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import { makeInner, defaultEmphasis } from '../../util/model';
 import { createTooltipMarkup } from '../tooltip/tooltipMarkup';
 
@@ -51,6 +53,7 @@ export interface MarkerPositionOption {
     // Absolute position, px or percent string
     x?: number | string
     y?: number | string
+    relativeTo?: 'container' | 'coordinate'
 
     /**
      * Coord on any coordinate system
@@ -105,11 +108,13 @@ abstract class MarkerModel<Opts extends MarkerOption = MarkerOption> extends Com
      */
     createdBySelf = false;
 
+    preventAutoZ = true;
+
     static readonly dependencies = ['series', 'grid', 'polar', 'geo'];
 
     __hostSeries: SeriesModel;
 
-    private _data: List;
+    private _data: SeriesData;
 
     /**
      * @overrite
@@ -217,12 +222,26 @@ abstract class MarkerModel<Opts extends MarkerOption = MarkerOption> extends Com
         });
     }
 
-    getData(): List<this> {
-        return this._data as List<this>;
+    getData(): SeriesData<this> {
+        return this._data as SeriesData<this>;
     }
 
-    setData(data: List) {
+    setData(data: SeriesData) {
         this._data = data;
+    }
+
+    getDataParams(
+        dataIndex: number,
+        dataType?: SeriesDataType
+    ): CallbackDataParams {
+        const params = DataFormatMixin.prototype.getDataParams.call(this, dataIndex, dataType);
+        const hostSeries = this.__hostSeries;
+        if (hostSeries) {
+            params.seriesId = hostSeries.id;
+            params.seriesName = hostSeries.name;
+            params.seriesType = hostSeries.subType;
+        }
+        return params;
     }
 
     /**
@@ -243,6 +262,7 @@ abstract class MarkerModel<Opts extends MarkerOption = MarkerOption> extends Com
     }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface MarkerModel<Opts extends MarkerOption = MarkerOption> extends DataFormatMixin {}
 zrUtil.mixin(MarkerModel, DataFormatMixin.prototype);
 

@@ -17,12 +17,12 @@
 * under the License.
 */
 
-import {bind, each, isFunction, isString, indexOf} from 'zrender/src/core/util';
+import { bind, each, isFunction, isString, indexOf } from 'zrender/src/core/util';
 import * as eventTool from 'zrender/src/core/event';
 import * as graphic from '../../util/graphic';
 import * as throttle from '../../util/throttle';
 import DataZoomView from './DataZoomView';
-import {linearMap, asc, parsePercent} from '../../util/number';
+import { linearMap, asc, parsePercent, round } from '../../util/number';
 import * as layout from '../../util/layout';
 import sliderMove from '../helper/sliderMove';
 import GlobalModel from '../../model/Global';
@@ -35,18 +35,23 @@ import { RectLike } from 'zrender/src/core/BoundingRect';
 import Axis from '../../coord/Axis';
 import SeriesModel from '../../model/Series';
 import { AxisBaseModel } from '../../coord/AxisBaseModel';
-import { getAxisMainType, collectReferCoordSysModelInfo } from './helper';
+import { getAxisMainType, collectReferCoordSysModelInfo, getAlignTo } from './helper';
 import { enableHoverEmphasis } from '../../util/states';
 import { createSymbol, symbolBuildProxies } from '../../util/symbol';
 import { deprecateLog } from '../../util/log';
 import { PointLike } from 'zrender/src/core/Point';
 import Displayable from 'zrender/src/graphic/Displayable';
-import {createTextStyle} from '../../label/labelStyle';
+import { createTextStyle } from '../../label/labelStyle';
+import SeriesData from '../../data/SeriesData';
+import tokens from '../../visual/tokens';
+import { isOrdinalScale, isTimeScale } from '../../scale/helper';
+import { AxisProxyWindow } from './AxisProxy';
+import type Scale from '../../scale/Scale';
+
 
 const Rect = graphic.Rect;
 
 // Constants
-const DEFAULT_LOCATION_EDGE_GAP = 7;
 const DEFAULT_FRAME_BORDER_WIDTH = 1;
 const DEFAULT_FILLER_SIZE = 30;
 const DEFAULT_MOVE_HANDLE_SIZE = 7;
@@ -57,7 +62,8 @@ const SHOW_DATA_SHADOW_SERIES_TYPE = ['line', 'bar', 'candlestick', 'scatter'];
 
 const REALTIME_ANIMATION_CONFIG = {
     easing: 'cubicOut',
-    duration: 100
+    duration: 100,
+    delay: 0
 } as const;
 
 // const NORMAL_ANIMATION_CONFIG = {
@@ -115,6 +121,8 @@ class SliderZoomView extends DataZoomView {
 
     private _brushing: boolean;
 
+    private _isOverDataInfoTriggerArea: boolean;
+
     private _dataShadowInfo: {
         thisAxis: Axis
         series: SeriesModel
@@ -122,6 +130,13 @@ class SliderZoomView extends DataZoomView {
         otherDim: string
         otherAxisInverse: boolean
     };
+
+    // Cached raw data. Avoid rendering data shadow multiple times.
+    private _shadowData: SeriesData;
+    private _shadowDim: string;
+    private _shadowSize: number[];
+    private _shadowPolygonPts: number[][];
+    private _shadowPolylinePts: number[][];
 
     init(ecModel: GlobalModel, api: ExtensionAPI) {
         this.api = api;
@@ -215,22 +230,24 @@ class SliderZoomView extends DataZoomView {
         const showMoveHandle = dataZoomModel.get('brushSelect');
         const moveHandleSize = showMoveHandle ? DEFAULT_MOVE_HANDLE_SIZE : 0;
 
+        const refContainer = layout.createBoxLayoutReference(dataZoomModel, api).refContainer;
+
         // If some of x/y/width/height are not specified,
         // auto-adapt according to target grid.
         const coordRect = this._findCoordRect();
-        const ecSize = {width: api.getWidth(), height: api.getHeight()};
+        const edgeGap = dataZoomModel.get('defaultLocationEdgeGap', true) || 0;
         // Default align by coordinate system rect.
         const positionInfo = this._orient === HORIZONTAL
             ? {
                 // Why using 'right', because right should be used in vertical,
                 // and it is better to be consistent for dealing with position param merge.
-                right: ecSize.width - coordRect.x - coordRect.width,
-                top: (ecSize.height - DEFAULT_FILLER_SIZE - DEFAULT_LOCATION_EDGE_GAP - moveHandleSize),
+                right: refContainer.width - coordRect.x - coordRect.width,
+                top: refContainer.height - DEFAULT_FILLER_SIZE - edgeGap - moveHandleSize,
                 width: coordRect.width,
                 height: DEFAULT_FILLER_SIZE
             }
             : { // vertical
-                right: DEFAULT_LOCATION_EDGE_GAP,
+                right: edgeGap,
                 top: coordRect.y,
                 width: DEFAULT_FILLER_SIZE,
                 height: coordRect.height
@@ -249,10 +266,10 @@ class SliderZoomView extends DataZoomView {
 
         const layoutRect = layout.getLayoutRect(
             layoutParams,
-            ecSize
+            refContainer
         );
 
-        this._location = {x: layoutRect.x, y: layoutRect.y};
+        this._location = { x: layoutRect.x, y: layoutRect.y };
         this._size = [layoutRect.width, layoutRect.height];
         this._orient === VERTICAL && this._size.reverse();
     }
@@ -277,14 +294,17 @@ class SliderZoomView extends DataZoomView {
             ? {scaleY: otherAxisInverse ? 1 : -1, scaleX: -1 }
             : (orient === VERTICAL && !inverse)
             ? {scaleY: otherAxisInverse ? -1 : 1, scaleX: 1, rotation: Math.PI / 2}
-            // Dont use Math.PI, considering shadow direction.
+            // Don't use Math.PI, considering shadow direction.
             : {scaleY: otherAxisInverse ? -1 : 1, scaleX: -1, rotation: Math.PI / 2}
         );
 
         // Position barGroup
         const rect = thisGroup.getBoundingRect([sliderGroup]);
-        thisGroup.x = location.x - rect.x;
-        thisGroup.y = location.y - rect.y;
+        const rectX = isNaN(rect.x) ? 0 : rect.x;
+        const rectY = isNaN(rect.y) ? 0 : rect.y;
+
+        thisGroup.x = location.x - rectX;
+        thisGroup.y = location.y - rectY;
         thisGroup.markRedraw();
     }
 
@@ -347,10 +367,11 @@ class SliderZoomView extends DataZoomView {
         }
 
         const size = this._size;
+        const oldSize = this._shadowSize || [];
         const seriesModel = info.series;
         const data = seriesModel.getRawData();
-
-        const otherDim: string = seriesModel.getShadowDim
+        const candlestickDim = seriesModel.getShadowDim && seriesModel.getShadowDim();
+        const otherDim: string = candlestickDim && data.getDimensionInfo(candlestickDim)
             ? seriesModel.getShadowDim() // @see candlestick
             : info.otherDim;
 
@@ -358,57 +379,82 @@ class SliderZoomView extends DataZoomView {
             return;
         }
 
-        let otherDataExtent = data.getDataExtent(otherDim);
-        // Nice extent.
-        const otherOffset = (otherDataExtent[1] - otherDataExtent[0]) * 0.3;
-        otherDataExtent = [
-            otherDataExtent[0] - otherOffset,
-            otherDataExtent[1] + otherOffset
-        ];
-        const otherShadowExtent = [0, size[1]];
+        let polygonPts = this._shadowPolygonPts;
+        let polylinePts = this._shadowPolylinePts;
+        // Not re-render if data doesn't change.
+        if (
+            data !== this._shadowData || otherDim !== this._shadowDim
+            || size[0] !== oldSize[0] || size[1] !== oldSize[1]
+        ) {
+            const thisDataExtent = data.getDataExtent(info.thisDim);
+            let otherDataExtent = data.getDataExtent(otherDim);
+            // Nice extent.
+            const otherOffset = (otherDataExtent[1] - otherDataExtent[0]) * 0.3;
+            otherDataExtent = [
+                otherDataExtent[0] - otherOffset,
+                otherDataExtent[1] + otherOffset
+            ];
+            const otherShadowExtent = [0, size[1]];
+            const thisShadowExtent = [0, size[0]];
 
-        const thisShadowExtent = [0, size[0]];
+            const areaPoints = [[size[0], 0], [0, 0]];
+            const linePoints: number[][] = [];
+            const step = thisShadowExtent[1] / (Math.max(1, data.count() - 1));
+            const normalizationConstant = size[0] / (thisDataExtent[1] - thisDataExtent[0]);
+            const isTimeAxis = info.thisAxis.type === 'time';
+            let thisCoord = -step;
 
-        const areaPoints = [[size[0], 0], [0, 0]];
-        const linePoints: number[][] = [];
-        const step = thisShadowExtent[1] / (data.count() - 1);
-        let thisCoord = 0;
+            // Optimize for large data shadow
+            const stride = Math.round(data.count() / size[0]);
+            let lastIsEmpty: boolean;
 
-        // Optimize for large data shadow
-        const stride = Math.round(data.count() / size[0]);
-        let lastIsEmpty: boolean;
-        data.each([otherDim], function (value: ParsedValue, index) {
-            if (stride > 0 && (index % stride)) {
-                thisCoord += step;
-                return;
-            }
+            data.each([info.thisDim, otherDim], function (thisValue: ParsedValue, otherValue: ParsedValue, index) {
+                if (stride > 0 && (index % stride)) {
+                    if (!isTimeAxis) {
+                        thisCoord += step;
+                    }
+                    return;
+                }
 
-            // FIXME
-            // Should consider axis.min/axis.max when drawing dataShadow.
+                thisCoord = isTimeAxis
+                    ? (+thisValue - thisDataExtent[0]) * normalizationConstant
+                    : thisCoord + step;
 
-            // FIXME
-            // 应该使用统一的空判断？还是在list里进行空判断？
-            const isEmpty = value == null || isNaN(value as number) || value === '';
-            // See #4235.
-            const otherCoord = isEmpty
-                ? 0 : linearMap(value as number, otherDataExtent, otherShadowExtent, true);
+                // FIXME
+                // Should consider axis.min/axis.max when drawing dataShadow.
 
-            // Attempt to draw data shadow precisely when there are empty value.
-            if (isEmpty && !lastIsEmpty && index) {
-                areaPoints.push([areaPoints[areaPoints.length - 1][0], 0]);
-                linePoints.push([linePoints[linePoints.length - 1][0], 0]);
-            }
-            else if (!isEmpty && lastIsEmpty) {
-                areaPoints.push([thisCoord, 0]);
-                linePoints.push([thisCoord, 0]);
-            }
+                // FIXME
+                // 应该使用统一的空判断？还是在list里进行空判断？
+                const isEmpty = otherValue == null || isNaN(otherValue as number) || otherValue === '';
+                // See #4235.
+                const otherCoord = isEmpty
+                    ? 0 : linearMap(otherValue as number, otherDataExtent, otherShadowExtent, true);
 
-            areaPoints.push([thisCoord, otherCoord]);
-            linePoints.push([thisCoord, otherCoord]);
+                // Attempt to draw data shadow precisely when there are empty value.
+                if (isEmpty && !lastIsEmpty && index) {
+                    areaPoints.push([areaPoints[areaPoints.length - 1][0], 0]);
+                    linePoints.push([linePoints[linePoints.length - 1][0], 0]);
+                }
+                else if (!isEmpty && lastIsEmpty) {
+                    areaPoints.push([thisCoord, 0]);
+                    linePoints.push([thisCoord, 0]);
+                }
 
-            thisCoord += step;
-            lastIsEmpty = isEmpty;
-        });
+                if (!isEmpty) {
+                    areaPoints.push([thisCoord, otherCoord]);
+                    linePoints.push([thisCoord, otherCoord]);
+                }
+
+                lastIsEmpty = isEmpty;
+            });
+
+            polygonPts = this._shadowPolygonPts = areaPoints;
+            polylinePts = this._shadowPolylinePts = linePoints;
+
+        }
+        this._shadowData = data;
+        this._shadowDim = otherDim;
+        this._shadowSize = [size[0], size[1]];
 
         const dataZoomModel = this.dataZoomModel;
 
@@ -416,14 +462,14 @@ class SliderZoomView extends DataZoomView {
             const model = dataZoomModel.getModel(isSelectedArea ? 'selectedDataBackground' : 'dataBackground');
             const group = new graphic.Group();
             const polygon = new graphic.Polygon({
-                shape: {points: areaPoints},
+                shape: { points: polygonPts },
                 segmentIgnoreThreshold: 1,
                 style: model.getModel('areaStyle').getAreaStyle(),
                 silent: true,
                 z2: -20
             });
             const polyline = new graphic.Polyline({
-                shape: {points: linePoints},
+                shape: { points: polylinePts },
                 segmentIgnoreThreshold: 1,
                 style: model.getModel('lineStyle').getLineStyle(),
                 silent: true,
@@ -465,8 +511,8 @@ class SliderZoomView extends DataZoomView {
                 }
 
                 if (showDataShadow !== true && indexOf(
-                        SHOW_DATA_SHADOW_SERIES_TYPE, seriesModel.get('type')
-                    ) < 0
+                    SHOW_DATA_SHADOW_SERIES_TYPE, seriesModel.get('type')
+                ) < 0
                 ) {
                     return;
                 }
@@ -483,11 +529,12 @@ class SliderZoomView extends DataZoomView {
                 }
 
                 otherDim = seriesModel.getData().mapDimension(otherDim);
+                const thisDim = seriesModel.getData().mapDimension(axisDim);
 
                 result = {
                     thisAxis: thisAxis,
                     series: seriesModel,
-                    thisDim: axisDim,
+                    thisDim: thisDim,
                     otherDim: otherDim,
                     otherAxisInverse: otherAxisInverse
                 };
@@ -537,10 +584,11 @@ class SliderZoomView extends DataZoomView {
                 r: borderRadius
             },
             style: {
-                stroke: dataZoomModel.get('dataBackgroundColor' as any) // deprecated option
+                // deprecated option
+                stroke: dataZoomModel.get('dataBackgroundColor' as any)
                     || dataZoomModel.get('borderColor'),
                 lineWidth: DEFAULT_FRAME_BORDER_WIDTH,
-                fill: 'rgba(0,0,0,0)'
+                fill: tokens.color.transparent
             }
         }));
 
@@ -567,8 +615,8 @@ class SliderZoomView extends DataZoomView {
                 draggable: true,
                 drift: bind(this._onDragMove, this, handleIndex),
                 ondragend: bind(this._onDragEnd, this),
-                onmouseover: bind(this._showDataInfo, this, true),
-                onmouseout: bind(this._showDataInfo, this, false),
+                onmouseover: bind(this._onOverDataInfoTriggerArea, this, true),
+                onmouseout: bind(this._onOverDataInfoTriggerArea, this, false),
                 z2: 5
             });
 
@@ -594,11 +642,13 @@ class SliderZoomView extends DataZoomView {
             sliderGroup.add(handles[handleIndex] = path);
 
             const textStyleModel = dataZoomModel.getModel('textStyle');
+            const handleLabel = dataZoomModel.get('handleLabel') || {};
+            const handleLabelShow = handleLabel.show || false;
 
             thisGroup.add(
                 handleLabels[handleIndex] = new graphic.Text({
                 silent: true,
-                invisible: true,
+                invisible: !handleLabelShow,
                 style: createTextStyle(textStyleModel, {
                     x: 0, y: 0, text: '',
                     verticalAlign: 'middle',
@@ -628,7 +678,7 @@ class SliderZoomView extends DataZoomView {
             const moveHandleIcon = displayables.moveHandleIcon = createSymbol(
                 dataZoomModel.get('moveHandleIcon'),
                 -iconSize / 2, -iconSize / 2, iconSize, iconSize,
-                '#fff',
+                tokens.color.neutral00,
                 true
             );
             moveHandleIcon.silent = true;
@@ -648,8 +698,8 @@ class SliderZoomView extends DataZoomView {
             });
 
             actualMoveZone.on('mouseover', () => {
-                    api.enterEmphasis(moveHandle);
-                })
+                api.enterEmphasis(moveHandle);
+            })
                 .on('mouseout', () => {
                     api.leaveEmphasis(moveHandle);
                 });
@@ -661,12 +711,12 @@ class SliderZoomView extends DataZoomView {
 
         actualMoveZone.attr({
             draggable: true,
-            cursor: getCursor(this._orient),
-            drift: bind(this._onDragMove, this, 'all'),
-            ondragstart: bind(this._showDataInfo, this, true),
-            ondragend: bind(this._onDragEnd, this),
-            onmouseover: bind(this._showDataInfo, this, true),
-            onmouseout: bind(this._showDataInfo, this, false)
+            cursor: 'grab',
+            drift: bind(this._onActualMoveZoneDrift, this),
+            ondragstart: bind(this._onActualMoveZoneDragStart, this),
+            ondragend: bind(this._onActualMoveZoneDragEnd, this),
+            onmouseover: bind(this._onOverDataInfoTriggerArea, this, true),
+            onmouseout: bind(this._onOverDataInfoTriggerArea, this, false)
         });
     }
 
@@ -772,30 +822,36 @@ class SliderZoomView extends DataZoomView {
 
     private _updateDataInfo(nonRealtime?: boolean) {
         const dataZoomModel = this.dataZoomModel;
-        const displaybles = this._displayables;
-        const handleLabels = displaybles.handleLabels;
+        const displayables = this._displayables;
+        const handleLabels = displayables.handleLabels;
         const orient = this._orient;
         let labelTexts = ['', ''];
 
-        // FIXME
-        // date型，支持formatter，autoformatter（ec2 date.getAutoFormatter）
         if (dataZoomModel.get('showDetail')) {
             const axisProxy = dataZoomModel.findRepresentativeAxisProxy();
+            const scale = axisProxy.getAxisModel().axis.scale;
 
             if (axisProxy) {
-                const axis = axisProxy.getAxisModel().axis;
                 const range = this._range;
 
-                const dataInterval = nonRealtime
+                let window: AxisProxyWindow;
+                if (nonRealtime) {
                     // See #4434, data and axis are not processed and reset yet in non-realtime mode.
-                    ? axisProxy.calculateDataWindow({
-                        start: range[0], end: range[1]
-                    }).valueWindow
-                    : axisProxy.getDataValueWindow();
+                    let calcWinInput = {start: range[0], end: range[1]};
+                    const alignTo = getAlignTo(dataZoomModel, axisProxy);
+                    if (alignTo) {
+                        const alignToWindow = alignTo.calculateDataWindow(calcWinInput).percentInverted;
+                        calcWinInput = {start: alignToWindow[0], end: alignToWindow[1]};
+                    }
+                    window = axisProxy.calculateDataWindow(calcWinInput);
+                }
+                else {
+                    window = axisProxy.getWindow();
+                }
 
                 labelTexts = [
-                    this._formatLabel(dataInterval[0], axis),
-                    this._formatLabel(dataInterval[1], axis)
+                    formatLabel(dataZoomModel, 0, window, scale),
+                    formatLabel(dataZoomModel, 1, window, scale)
                 ];
             }
         }
@@ -810,7 +866,7 @@ class SliderZoomView extends DataZoomView {
             // Text should not transform by barGroup.
             // Ignore handlers transform
             const barTransform = graphic.getTransform(
-                displaybles.handles[handleIndex].parent, this.group
+                displayables.handles[handleIndex].parent, this.group
             );
             const direction = graphic.transformDirection(
                 handleIndex === 0 ? 'right' : 'left', barTransform
@@ -833,46 +889,46 @@ class SliderZoomView extends DataZoomView {
         }
     }
 
-    private _formatLabel(value: ParsedValue, axis: Axis) {
-        const dataZoomModel = this.dataZoomModel;
-        const labelFormatter = dataZoomModel.get('labelFormatter');
-
-        let labelPrecision = dataZoomModel.get('labelPrecision');
-        if (labelPrecision == null || labelPrecision === 'auto') {
-            labelPrecision = axis.getPixelPrecision();
-        }
-
-        const valueStr = (value == null || isNaN(value as number))
-            ? ''
-            // FIXME Glue code
-            : (axis.type === 'category' || axis.type === 'time')
-                ? axis.scale.getLabel({
-                    value: Math.round(value as number)
-                })
-                // param of toFixed should less then 20.
-                : (value as number).toFixed(Math.min(labelPrecision as number, 20));
-
-        return isFunction(labelFormatter)
-            ? labelFormatter(value as number, valueStr)
-            : isString(labelFormatter)
-            ? labelFormatter.replace('{value}', valueStr)
-            : valueStr;
+    private _onOverDataInfoTriggerArea(isOver: boolean): void {
+        this._isOverDataInfoTriggerArea = isOver;
+        this._showDataInfo(isOver);
     }
 
     /**
-     * @param showOrHide true: show, false: hide
+     * @param isEmphasis true: show, false: hide
      */
-    private _showDataInfo(showOrHide?: boolean) {
-        // Always show when drgging.
-        showOrHide = this._dragging || showOrHide;
+    private _showDataInfo(isEmphasis?: boolean) {
+        const handleLabel = this.dataZoomModel.get('handleLabel') || {};
+        const normalShow = handleLabel.show || false;
+        const emphasisHandleLabel = this.dataZoomModel.getModel(['emphasis', 'handleLabel']);
+        const emphasisShow = emphasisHandleLabel.get('show') || false;
+        // Dragging is considered as emphasis, unless emphasisShow is false
+        const toShow = (isEmphasis || this._dragging)
+            ? emphasisShow
+            : normalShow;
         const displayables = this._displayables;
         const handleLabels = displayables.handleLabels;
-        handleLabels[0].attr('invisible', !showOrHide);
-        handleLabels[1].attr('invisible', !showOrHide);
+        handleLabels[0].attr('invisible', !toShow);
+        handleLabels[1].attr('invisible', !toShow);
 
         // Highlight move handle
         displayables.moveHandle
-            && this.api[showOrHide ? 'enterEmphasis' : 'leaveEmphasis'](displayables.moveHandle, 1);
+            && this.api[toShow ? 'enterEmphasis' : 'leaveEmphasis'](displayables.moveHandle, 1);
+    }
+
+    private _onActualMoveZoneDrift(dx: number, dy: number, event: ZRElementEvent) {
+        this.api.getZr().setCursorStyle('grabbing');
+        this._onDragMove('all', dx, dy, event);
+    }
+
+    private _onActualMoveZoneDragStart(event: ZRElementEvent) {
+        (event.target as Displayable).attr('cursor', 'grabbing');
+        this._showDataInfo(true);
+    }
+
+    private _onActualMoveZoneDragEnd(event: ZRElementEvent) {
+        (event.target as Displayable).attr('cursor', 'grab');
+        this._onDragEnd();
     }
 
     private _onDragMove(handleIndex: 0 | 1 | 'all', dx: number, dy: number, event: ZRElementEvent) {
@@ -898,7 +954,11 @@ class SliderZoomView extends DataZoomView {
 
     private _onDragEnd() {
         this._dragging = false;
-        this._showDataInfo(false);
+
+        if (!this._isOverDataInfoTriggerArea) {
+            // Drag end may occur on draggable bars, where data info should be still shown.
+            this._showDataInfo(false);
+        }
 
         // While in realtime mode and stream mode, dispatch action when
         // drag end will cause the whole view rerender, which is unnecessary.
@@ -961,12 +1021,24 @@ class SliderZoomView extends DataZoomView {
         const viewExtend = this._getViewExtent();
         const percentExtent = [0, 100];
 
-        this._range = asc([
-            linearMap(brushShape.x, viewExtend, percentExtent, true),
-            linearMap(brushShape.x + brushShape.width, viewExtend, percentExtent, true)
-        ]);
+        const handleEnds = this._handleEnds = [brushShape.x, brushShape.x + brushShape.width];
+        const minMaxSpan = this.dataZoomModel.findRepresentativeAxisProxy().getMinMaxSpan();
+        // Restrict range.
+        sliderMove(
+            0,
+            handleEnds,
+            viewExtend,
+            0,
+            minMaxSpan.minSpan != null
+                ? linearMap(minMaxSpan.minSpan, percentExtent, viewExtend, true) : null,
+            minMaxSpan.maxSpan != null
+                ? linearMap(minMaxSpan.maxSpan, percentExtent, viewExtend, true) : null
+        );
 
-        this._handleEnds = [brushShape.x, brushShape.x + brushShape.width];
+        this._range = asc([
+            linearMap(handleEnds[0], viewExtend, percentExtent, true),
+            linearMap(handleEnds[1], viewExtend, percentExtent, true)
+        ]);
 
         this._updateView();
 
@@ -1030,7 +1102,7 @@ class SliderZoomView extends DataZoomView {
     }
 
     private _findCoordRect() {
-        // Find the grid coresponding to the first axis referred by dataZoom.
+        // Find the grid corresponding to the first axis referred by dataZoom.
         let rect: RectLike;
         const coordSysInfoList = collectReferCoordSysModelInfo(this.dataZoomModel).infoList;
 
@@ -1055,10 +1127,43 @@ class SliderZoomView extends DataZoomView {
 
 }
 
+function formatLabel(
+    dataZoomModel: SliderZoomModel,
+    extentIdx: 0 | 1,
+    window: AxisProxyWindow,
+    scale: Scale
+): string {
+    const labelFormatter = dataZoomModel.get('labelFormatter');
+
+    let labelPrecision = dataZoomModel.get('labelPrecision');
+    if (labelPrecision == null || labelPrecision === 'auto') {
+        labelPrecision = window.valuePrecision;
+    }
+
+    // Do not display values out of `SCALE_EXTENT_KIND_EFFECTIVE` - generally they are meaningless.
+    // For example, `scaleExtent[0]` is often `0`, and negative values are unlikely to be meaningful.
+    // That is, "nice" expansion and `SCALE_EXTENT_KIND_MAPPING` expansion are always not display in labels.
+    const value = window.value[extentIdx];
+
+    const valueStr = (value == null || isNaN(value))
+        ? ''
+        : (isOrdinalScale(scale) || isTimeScale(scale))
+        ? scale.getLabel({value: Math.round(value)})
+        : isFinite(labelPrecision)
+        ? round(value, labelPrecision, true)
+        : value + '';
+
+    return isFunction(labelFormatter)
+        ? labelFormatter(value, valueStr)
+        : isString(labelFormatter)
+            ? labelFormatter.replace('{value}', valueStr)
+            : valueStr;
+}
+
 function getOtherDim(thisDim: 'x' | 'y' | 'radius' | 'angle' | 'single' | 'z') {
     // FIXME
     // 这个逻辑和getOtherAxis里一致，但是写在这里是否不好
-    const map = {x: 'y', y: 'x', radius: 'angle', angle: 'radius'};
+    const map = { x: 'y', y: 'x', radius: 'angle', angle: 'radius' };
     return map[thisDim as 'x' | 'y' | 'radius' | 'angle'];
 }
 

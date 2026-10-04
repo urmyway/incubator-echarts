@@ -24,6 +24,7 @@ import ComponentView, { ComponentViewConstructor } from '../view/Component';
 import SeriesModel, { SeriesModelConstructor } from '../model/Series';
 import ChartView, { ChartViewConstructor } from '../view/Chart';
 
+import SeriesData from '../data/SeriesData';
 
 // Provide utilities API in echarts. It will be in echarts namespace.
 // Like echarts.util, echarts.graphic
@@ -38,7 +39,9 @@ export * as helper from './api/helper';
 
 export {use} from '../extension';
 
-//////////////// Helper Methods /////////////////////
+export {setPlatformAPI} from 'zrender/src/core/platform';
+
+// --------------------- Helper Methods ---------------------
 export {default as parseGeoJSON} from '../coord/geo/parseGeoJson';
 export {default as parseGeoJson} from '../coord/geo/parseGeoJson';
 
@@ -52,8 +55,9 @@ export * as util from './api/util';
 
 export {default as env} from 'zrender/src/core/env';
 
-//////////////// Export for Exension Usage ////////////////
-export {default as List} from '../data/List';
+// --------------------- Export for Extension Usage ---------------------
+// export {SeriesData};
+export {SeriesData as List};    // TODO: Compatitable with exists echarts-gl code
 export {default as Model} from '../model/Model';
 export {default as Axis} from '../coord/Axis';
 
@@ -68,12 +72,12 @@ export {
 export {brushSingle as innerDrawElementOnCanvas} from 'zrender/src/canvas/graphic';
 
 
-//////////////// Deprecated Extension Methods ////////////////
+// --------------------- Deprecated Extension Methods ---------------------
 
 // Should use `ComponentModel.extend` or `class XXXX extend ComponentModel` to create class.
 // Then use `registerComponentModel` in `install` parameter when `use` this extension. For example:
 // class Bar3DModel extends ComponentModel {}
-// export function install(registers) { regsiters.registerComponentModel(Bar3DModel); }
+// export function install(registers) { registers.registerComponentModel(Bar3DModel); }
 // echarts.use(install);
 export function extendComponentModel(proto: object): ComponentModel {
     const Model = (ComponentModel as ComponentModelConstructor).extend(proto) as any;

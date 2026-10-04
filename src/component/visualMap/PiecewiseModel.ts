@@ -44,9 +44,6 @@ type VisualState = VisualMapModel['stateList'][number];
 
 type InnerVisualPiece = VisualMappingOption['pieceList'][number];
 
-type GetPieceValueType<T extends InnerVisualPiece>
-    = T extends { interval: InnerVisualPiece['interval'] } ? number : string;
-
 /**
  * Order Rule:
  *
@@ -104,7 +101,7 @@ export interface PiecewiseVisualMapOption extends VisualMapOption {
      * When categories: {'cate1': false, 'cate3': true} When selected === false, means all unselected.
      */
     selected?: Dictionary<boolean>
-    selectedMode?: 'multiple' | 'single'
+    selectedMode?: 'multiple' | 'single' | boolean
 
     /**
      * By default, when text is used, label will hide (the logic
@@ -316,7 +313,7 @@ class PiecewiseModel extends VisualMapModel<PiecewiseVisualMapOption> {
             const dataIndices: number[] = [];
             const data = seriesModel.getData();
 
-            data.each(this.getDataDimension(data), function (value: number, dataIndex: number) {
+            data.each(this.getDataDimensionIndex(data), function (value: number, dataIndex: number) {
                 // Should always base on model pieceList, because it is order sensitive.
                 const pIdx = VisualMapping.findPieceIndex(value, pieceList);
                 pIdx === pieceIndex && dataIndices.push(dataIndex);
@@ -531,7 +528,7 @@ const resetMethods: Dictionary<ResetMethod> & ThisType<PiecewiseModel> = {
             }
             else {
                 // `min` `max` is legacy option.
-                // `lt` `gt` `lte` `gte` is recommanded.
+                // `lt` `gt` `lte` `gte` is recommended.
                 const interval = item.interval = [] as unknown as [number, number];
                 const close: typeof item.close = item.close = [0, 0];
 

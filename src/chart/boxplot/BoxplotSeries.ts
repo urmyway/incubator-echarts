@@ -28,18 +28,19 @@ import {
     OptionDataValueNumeric,
     StatesOptionMixin,
     SeriesEncodeOptionMixin,
-    DefaultEmphasisFocus
+    DefaultEmphasisFocus,
+    CallbackDataParams
 } from '../../util/types';
 import type Axis2D from '../../coord/cartesian/Axis2D';
 import Cartesian2D from '../../coord/cartesian/Cartesian2D';
 import { mixin } from 'zrender/src/core/util';
+import tokens from '../../visual/tokens';
 
 // [min,  Q1,  median (or Q2),  Q3,  max]
 type BoxplotDataValue = OptionDataValueNumeric[];
 
-
-export interface BoxplotStateOption {
-    itemStyle?: ItemStyleOption
+export interface BoxplotStateOption<TCbParams = never> {
+    itemStyle?: ItemStyleOption<TCbParams>
     label?: SeriesLabelOption
 }
 
@@ -55,13 +56,16 @@ interface ExtraStateOption {
     }
 }
 
-export interface BoxplotSeriesOption extends SeriesOption<BoxplotStateOption, ExtraStateOption>, BoxplotStateOption,
+export interface BoxplotSeriesOption
+    extends SeriesOption<BoxplotStateOption<CallbackDataParams>, ExtraStateOption>,
+    BoxplotStateOption<CallbackDataParams>,
     SeriesOnCartesianOptionMixin, SeriesEncodeOptionMixin {
     type?: 'boxplot'
 
     coordinateSystem?: 'cartesian2d'
 
     layout?: LayoutOrient
+    clip?: boolean;
     /**
      * [min, max] can be percent of band width.
      */
@@ -70,9 +74,11 @@ export interface BoxplotSeriesOption extends SeriesOption<BoxplotStateOption, Ex
     data?: (BoxplotDataValue | BoxplotDataItemOption)[]
 }
 
+export const SERIES_TYPE_BOXPLOT = 'boxplot';
+
 class BoxplotSeriesModel extends SeriesModel<BoxplotSeriesOption> {
 
-    static readonly type = 'series.boxplot';
+    static readonly type = 'series.' + SERIES_TYPE_BOXPLOT;
     readonly type = BoxplotSeriesModel.type;
 
     static readonly dependencies = ['xAxis', 'yAxis', 'grid'];
@@ -100,16 +106,17 @@ class BoxplotSeriesModel extends SeriesModel<BoxplotSeriesOption> {
     visualDrawType = 'stroke' as const;
 
     static defaultOption: BoxplotSeriesOption = {
-        zlevel: 0,
+        // zlevel: 0,
         z: 2,
         coordinateSystem: 'cartesian2d',
         legendHoverLink: true,
 
         layout: null,
+        clip: true,
         boxWidth: [7, 50],
 
         itemStyle: {
-            color: '#fff',
+            color: tokens.color.neutral00,
             borderWidth: 1
         },
 
@@ -121,7 +128,7 @@ class BoxplotSeriesModel extends SeriesModel<BoxplotSeriesOption> {
                 shadowBlur: 5,
                 shadowOffsetX: 1,
                 shadowOffsetY: 1,
-                shadowColor: 'rgba(0,0,0,0.2)'
+                shadowColor: tokens.color.shadow
             }
         },
 

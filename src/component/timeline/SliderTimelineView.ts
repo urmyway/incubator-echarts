@@ -23,8 +23,8 @@ import * as graphic from '../../util/graphic';
 import { createTextStyle } from '../../label/labelStyle';
 import * as layout from '../../util/layout';
 import TimelineView from './TimelineView';
-import TimelineAxis from './TimelineAxis';
-import {createSymbol} from '../../util/symbol';
+import TimelineAxis, { TimelineAxisType } from './TimelineAxis';
+import {createSymbol, normalizeSymbolOffset, normalizeSymbolSize} from '../../util/symbol';
 import * as numberUtil from '../../util/number';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
@@ -35,10 +35,6 @@ import TimelineModel, { TimelineDataItemOption, TimelineCheckpointStyle } from '
 import { TimelineChangePayload, TimelinePlayChangePayload } from './timelineAction';
 import Model from '../../model/Model';
 import { PathProps, PathStyleProps } from 'zrender/src/graphic/Path';
-import Scale from '../../scale/Scale';
-import OrdinalScale from '../../scale/Ordinal';
-import TimeScale from '../../scale/Time';
-import IntervalScale from '../../scale/Interval';
 import { VectorArray } from 'zrender/src/core/vector';
 import { parsePercent } from 'zrender/src/contain/text';
 import { makeInner } from '../../util/model';
@@ -46,6 +42,8 @@ import { getECData } from '../../util/innerStore';
 import { enableHoverEmphasis } from '../../util/states';
 import { createTooltipMarkup } from '../tooltip/tooltipMarkup';
 import Displayable from 'zrender/src/graphic/Displayable';
+import { createScaleByModel } from '../../coord/axisHelper';
+import { scaleCalcNiceDirectly } from '../../coord/axisNiceTicks';
 
 const PI = Math.PI;
 
@@ -338,9 +336,12 @@ class SliderTimelineView extends TimelineView {
 
     private _createAxis(layoutInfo: LayoutInfo, timelineModel: SliderTimelineModel) {
         const data = timelineModel.getData();
-        const axisType = timelineModel.get('axisType');
+        let axisType = timelineModel.get('axisType') || timelineModel.get('type') as TimelineAxisType;
+        if (axisType !== 'category' && axisType !== 'time') {
+            axisType = 'value';
+        }
 
-        const scale = createScaleByModel(timelineModel, axisType);
+        const scale = createScaleByModel(timelineModel, axisType, false);
 
         // Customize scale. The `tickValue` is `dataIndex`.
         scale.getTicks = function () {
@@ -351,7 +352,7 @@ class SliderTimelineView extends TimelineView {
 
         const dataExtent = data.getDataExtent('value');
         scale.setExtent(dataExtent[0], dataExtent[1]);
-        scale.niceTicks();
+        scaleCalcNiceDirectly(scale, {fixMinMax: [true, true]});
 
         const axis = new TimelineAxis('value', scale, layoutInfo.axisExtent as [number, number], axisType);
         axis.model = timelineModel;
@@ -420,7 +421,7 @@ class SliderTimelineView extends TimelineView {
 
         this._tickSymbols = [];
 
-        // The value is dataIndex, see the costomized scale.
+        // The value is dataIndex, see the customized scale.
         each(ticks, (tick: ScaleTick) => {
             const tickCoord = axis.dataToCoord(tick.value);
             const itemModel = data.getItemModel<TimelineDataItemOption>(tick.value);
@@ -470,15 +471,18 @@ class SliderTimelineView extends TimelineView {
         this._tickLabels = [];
 
         each(labels, (labelItem) => {
-            // The tickValue is dataIndex, see the costomized scale.
-            const dataIndex = labelItem.tickValue;
+            if (labelItem.tick.offInterval) {
+                return;
+            }
+            // The tickValue is dataIndex, see the customized scale.
+            const dataIndex = labelItem.tick.value;
 
             const itemModel = data.getItemModel<TimelineDataItemOption>(dataIndex);
             const normalLabelModel = itemModel.getModel('label');
             const hoverLabelModel = itemModel.getModel(['emphasis', 'label']);
             const progressLabelModel = itemModel.getModel(['progress', 'label']);
 
-            const tickCoord = axis.dataToCoord(labelItem.tickValue);
+            const tickCoord = axis.dataToCoord(dataIndex);
             const textEl = new graphic.Text({
                 x: tickCoord,
                 y: 0,
@@ -626,8 +630,11 @@ class SliderTimelineView extends TimelineView {
         this._currentPointer.x = toCoord;
         this._currentPointer.markRedraw();
 
-        this._progressLine.shape.x2 = toCoord;
-        this._progressLine.dirty();
+        const progressLine = this._progressLine;
+        if (progressLine) {
+            progressLine.shape.x2 = toCoord;
+            progressLine.dirty();
+        }
 
         const targetDataIndex = this._findNearestTick(toCoord);
         const timelineModel = this.model;
@@ -727,36 +734,11 @@ class SliderTimelineView extends TimelineView {
     }
 }
 
-function createScaleByModel(model: SliderTimelineModel, axisType?: string): Scale {
-    axisType = axisType || model.get('type');
-    if (axisType) {
-        switch (axisType) {
-            // Buildin scale
-            case 'category':
-                return new OrdinalScale({
-                    ordinalMeta: model.getCategories(),
-                    extent: [Infinity, -Infinity]
-                });
-            case 'time':
-                return new TimeScale({
-                    locale: model.ecModel.getLocaleModel(),
-                    useUTC: model.ecModel.get('useUTC')
-                });
-            default:
-                // default to be value
-                return new IntervalScale();
-        }
-    }
-}
-
 
 function getViewRect(model: SliderTimelineModel, api: ExtensionAPI) {
     return layout.getLayoutRect(
         model.getBoxLayoutParams(),
-        {
-            width: api.getWidth(),
-            height: api.getHeight()
-        },
+        layout.createBoxLayoutReference(model, api).refContainer,
         model.get('padding')
     );
 }
@@ -823,20 +805,15 @@ function giveSymbol(
         z2: 100
     }, opt, true);
 
-    let symbolSize = hostModel.get('symbolSize');
-    symbolSize = symbolSize instanceof Array
-        ? symbolSize.slice()
-        : [+symbolSize, +symbolSize];
+    const symbolSize = normalizeSymbolSize(hostModel.get('symbolSize'));
 
     opt.scaleX = symbolSize[0] / 2;
     opt.scaleY = symbolSize[1] / 2;
 
-    const symbolOffset = hostModel.get('symbolOffset');
+    const symbolOffset = normalizeSymbolOffset(hostModel.get('symbolOffset'), symbolSize);
     if (symbolOffset) {
-        opt.x = opt.x || 0;
-        opt.y = opt.y || 0;
-        opt.x += numberUtil.parsePercent(symbolOffset[0], symbolSize[0]);
-        opt.y += numberUtil.parsePercent(symbolOffset[1], symbolSize[1]);
+        opt.x = (opt.x || 0) + symbolOffset[0];
+        opt.y = (opt.y || 0) + symbolOffset[1];
     }
 
     const symbolRotate = hostModel.get('symbolRotate');

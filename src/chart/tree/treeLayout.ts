@@ -27,13 +27,15 @@ import {
     secondWalk,
     separation as sep,
     radialCoordinate,
-    getViewRect,
     TreeLayoutNode
 } from './layoutHelper';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
 import TreeSeriesModel from './TreeSeries';
+import { createBoxLayoutReference, getLayoutRect } from '../../util/layout';
 
+// NOTE: preserve it as a function rather than StageHandler as a test case of
+// `Scheduler['wrapStageHandler']` and `detectSeriseType`.
 export default function treeLayout(ecModel: GlobalModel, api: ExtensionAPI) {
     ecModel.eachSeriesByType('tree', function (seriesModel: TreeSeriesModel) {
         commonLayout(seriesModel, api);
@@ -41,7 +43,8 @@ export default function treeLayout(ecModel: GlobalModel, api: ExtensionAPI) {
 }
 
 function commonLayout(seriesModel: TreeSeriesModel, api: ExtensionAPI) {
-    const layoutInfo = getViewRect(seriesModel, api);
+    const refContainer = createBoxLayoutReference(seriesModel, api).refContainer;
+    const layoutInfo = getLayoutRect(seriesModel.getBoxLayoutParams(), refContainer);
     seriesModel.layoutInfo = layoutInfo;
     const layout = seriesModel.get('layout');
     let width = 0;

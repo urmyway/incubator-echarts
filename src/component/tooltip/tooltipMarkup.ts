@@ -19,7 +19,7 @@
 
 import {
     Dictionary, TooltipRenderMode, ColorString,
-    TooltipOrderMode, DimensionType
+    TooltipOrderMode, DimensionType, CommonTooltipOption, OptionDataValue
 } from '../../util/types';
 import {
     TooltipMarkerType, getTooltipMarker, encodeHTML,
@@ -31,6 +31,7 @@ import SeriesModel from '../../model/Series';
 import { getRandomIdBase } from '../../util/number';
 import Model from '../../model/Model';
 import { TooltipOption } from './TooltipModel';
+import tokens from '../../visual/tokens';
 
 type RichTextStyle = {
     fontSize: number | string,
@@ -42,6 +43,17 @@ type TextStyle = string | RichTextStyle;
 
 const TOOLTIP_LINE_HEIGHT_CSS = 'line-height:1';
 
+function getTooltipLineHeight(
+    textStyle: TooltipOption['textStyle']
+) {
+    const lineHeight = textStyle.lineHeight;
+    if (lineHeight == null) {
+        return TOOLTIP_LINE_HEIGHT_CSS;
+    }
+    else {
+        return `line-height:${encodeHTML(lineHeight + '')}px`;
+    }
+}
 // TODO: more textStyle option
 function getTooltipTextStyle(
     textStyle: TooltipOption['textStyle'],
@@ -50,10 +62,10 @@ function getTooltipTextStyle(
     nameStyle: TextStyle
     valueStyle: TextStyle
 } {
-    const nameFontColor = textStyle.color || '#6e7079';
+    const nameFontColor = textStyle.color || tokens.color.tertiary;
     const nameFontSize = textStyle.fontSize || 12;
     const nameFontWeight = textStyle.fontWeight || '400';
-    const valueFontColor = textStyle.color || '#464646';
+    const valueFontColor = textStyle.color || tokens.color.secondary;
     const valueFontSize = textStyle.fontSize || 14;
     const valueFontWeight = textStyle.fontWeight || '900';
 
@@ -88,8 +100,8 @@ function getTooltipTextStyle(
 type GapLevel = number;
 // See `TooltipMarkupLayoutIntent['innerGapLevel']`.
 // (value from UI design)
-const HTML_GAPS: { [key in GapLevel]: number } = [0, 10, 20, 30];
-const RICH_TEXT_GAPS: { [key in GapLevel]: string } = ['', '\n', '\n\n', '\n\n\n'];
+const HTML_GAPS: Record<GapLevel, number> = [0, 10, 20, 30];
+const RICH_TEXT_GAPS: Record<GapLevel, string> = ['', '\n', '\n\n', '\n\n\n'];
 
 /**
  * This is an abstract layer to insulate the upper usage of tooltip content
@@ -128,7 +140,6 @@ export type TooltipMarkupBlockFragment =
 interface TooltipMarkupBlock {
     // Use to make comparison when `sortBlocks: true`.
     sortParam?: unknown;
-    __gapLevelBetweenSubBlocks?: number;
 }
 
 export interface TooltipMarkupSection extends TooltipMarkupBlock {
@@ -141,6 +152,8 @@ export interface TooltipMarkupSection extends TooltipMarkupBlock {
     blocks?: TooltipMarkupBlockFragment[];
     // Enable to sort blocks when making final html or richText.
     sortBlocks?: boolean;
+
+    valueFormatter?: CommonTooltipOption<unknown>['valueFormatter']
 }
 
 export interface TooltipMarkupNameValueBlock extends TooltipMarkupBlock {
@@ -161,6 +174,9 @@ export interface TooltipMarkupNameValueBlock extends TooltipMarkupBlock {
     // null/undefined/NaN/''... (displayed as '-').
     noName?: boolean;
     noValue?: boolean;
+    rawDataIndex?: number;
+
+    valueFormatter?: CommonTooltipOption<unknown>['valueFormatter']
 }
 
 /**
@@ -180,10 +196,7 @@ export function createTooltipMarkup(type: TooltipMarkupBlockFragment['type'], op
 // Can be null/undefined, which means generate nothing markup text.
 type MarkupText = string;
 interface TooltipMarkupFragmentBuilder {
-    planLayout(
-        fragment: TooltipMarkupBlockFragment
-    ): void;
-    build(
+    (
         ctx: TooltipMarkupBuildContext,
         fragment: TooltipMarkupBlockFragment,
         topMarginForOuterGap: number,
@@ -191,167 +204,52 @@ interface TooltipMarkupFragmentBuilder {
     ): MarkupText;
 }
 
-function getBuilder(fragment: TooltipMarkupBlockFragment): TooltipMarkupFragmentBuilder {
-    return hasOwn(builderMap, fragment.type) && builderMap[fragment.type];
+function isSectionFragment(frag: TooltipMarkupBlockFragment): frag is TooltipMarkupSection {
+    return frag.type === 'section';
 }
 
-const builderMap: { [key in TooltipMarkupBlockFragment['type']]: TooltipMarkupFragmentBuilder } = {
+function getBuilder(frag: TooltipMarkupBlockFragment): TooltipMarkupFragmentBuilder {
+    return isSectionFragment(frag) ? buildSection : buildNameValue;
+}
 
-    /**
-     * A `section` block is like:
-     * ```
-     * header
-     * subBlock
-     * subBlock
-     * ...
-     * ```
-     */
-    section: {
-        planLayout: function (fragment: TooltipMarkupSection) {
-            const subBlockLen = fragment.blocks.length;
-            const thisBlockHasInnerGap = subBlockLen > 1 || (subBlockLen > 0 && !fragment.noHeader);
-
-            let thisGapLevelBetweenSubBlocks = 0;
-            each(fragment.blocks, function (subBlock) {
-                getBuilder(subBlock).planLayout(subBlock);
-                const subGapLevel = subBlock.__gapLevelBetweenSubBlocks;
-
-                // If the some of the sub-blocks have some gaps (like 10px) inside, this block
-                // should use a larger gap (like 20px) to distinguish those sub-blocks.
-                if (subGapLevel >= thisGapLevelBetweenSubBlocks) {
-                    thisGapLevelBetweenSubBlocks = subGapLevel + (
-                        (
-                            thisBlockHasInnerGap && (
-                                // 0 always can not be readable gap level.
-                                !subGapLevel
-                                // If no header, always keep the sub gap level. Otherwise
-                                // look weird in case `multipleSeries`.
-                                || (subBlock.type === 'section' && !subBlock.noHeader)
-                            )
-                        ) ? 1 : 0
-                    );
-                }
-            });
-            fragment.__gapLevelBetweenSubBlocks = thisGapLevelBetweenSubBlocks;
-        },
-
-        build(
-            ctx,
-            fragment: TooltipMarkupSection,
-            topMarginForOuterGap,
-            toolTipTextStyle
-        ): string {
-            const noHeader = fragment.noHeader;
-            const gaps = getGap(fragment);
-
-            const subMarkupText = buildSubBlocks(
-                ctx,
-                fragment,
-                noHeader ? topMarginForOuterGap : gaps.html,
-                toolTipTextStyle
-            );
-
-            if (noHeader) {
-                return subMarkupText;
-            }
-
-            const displayableHeader = makeValueReadable(fragment.header, 'ordinal', ctx.useUTC);
-            const {nameStyle} = getTooltipTextStyle(toolTipTextStyle, ctx.renderMode);
-            if (ctx.renderMode === 'richText') {
-                return wrapInlineNameRichText(ctx, displayableHeader, nameStyle as RichTextStyle) + gaps.richText
-                    + subMarkupText;
-            }
-            else {
-                return wrapBlockHTML(
-                    `<div style="${nameStyle};${TOOLTIP_LINE_HEIGHT_CSS};">`
-                        + encodeHTML(displayableHeader)
-                        + '</div>'
-                        + subMarkupText,
-                    topMarginForOuterGap
+function getBlockGapLevel(frag: TooltipMarkupBlockFragment) {
+    if (isSectionFragment(frag)) {
+        let gapLevel = 0;
+        const subBlockLen = frag.blocks.length;
+        const hasInnerGap = subBlockLen > 1 || (subBlockLen > 0 && !frag.noHeader);
+        each(frag.blocks, function (subBlock) {
+            const subGapLevel = getBlockGapLevel(subBlock);
+            // If the some of the sub-blocks have some gaps (like 10px) inside, this block
+            // should use a larger gap (like 20px) to distinguish those sub-blocks.
+            if (subGapLevel >= gapLevel) {
+                gapLevel = subGapLevel + (
+                    +(
+                        hasInnerGap && (
+                            // 0 always can not be readable gap level.
+                            !subGapLevel
+                            // If no header, always keep the sub gap level. Otherwise
+                            // look weird in case `multipleSeries`.
+                            || (isSectionFragment(subBlock) && !subBlock.noHeader)
+                        )
+                    )
                 );
             }
-        }
-    },
-
-    /**
-     * A `nameValue` block is like:
-     * ```
-     * marker  name  value
-     * ```
-     */
-    nameValue: {
-        planLayout: function (fragment: TooltipMarkupNameValueBlock) {
-            fragment.__gapLevelBetweenSubBlocks = 0;
-        },
-
-        build(ctx, fragment: TooltipMarkupNameValueBlock, topMarginForOuterGap, toolTipTextStyle) {
-            const renderMode = ctx.renderMode;
-            const noName = fragment.noName;
-            const noValue = fragment.noValue;
-            const noMarker = !fragment.markerType;
-            const name = fragment.name;
-            const value = fragment.value;
-            const useUTC = ctx.useUTC;
-
-            if (noName && noValue) {
-                return;
-            }
-
-            const markerStr = noMarker
-                ? ''
-                : ctx.markupStyleCreator.makeTooltipMarker(
-                    fragment.markerType,
-                    fragment.markerColor || '#333',
-                    renderMode
-                );
-            const readableName = noName
-                ? ''
-                : makeValueReadable(name, 'ordinal', useUTC);
-            const valueTypeOption = fragment.valueType;
-            const readableValueList = noValue
-                ? []
-                : (isArray(value)
-                    ? map(value, (val, idx) => makeValueReadable(
-                        val, isArray(valueTypeOption) ? valueTypeOption[idx] : valueTypeOption, useUTC
-                    ))
-                    : [makeValueReadable(
-                        value, isArray(valueTypeOption) ? valueTypeOption[0] : valueTypeOption, useUTC
-                    )]
-                );
-            const valueAlignRight = !noMarker || !noName;
-            // It little weird if only value next to marker but far from marker.
-            const valueCloseToMarker = !noMarker && noName;
-
-            const {nameStyle, valueStyle} = getTooltipTextStyle(toolTipTextStyle, renderMode);
-
-            return renderMode === 'richText'
-                ? (
-                    (noMarker ? '' : markerStr)
-                    + (noName ? '' : wrapInlineNameRichText(ctx, readableName, nameStyle as RichTextStyle))
-                    // Value has commas inside, so use ' ' as delimiter for multiple values.
-                    + (noValue ? '' : wrapInlineValueRichText(
-                        ctx, readableValueList, valueAlignRight, valueCloseToMarker, valueStyle as RichTextStyle
-                    ))
-                )
-                : wrapBlockHTML(
-                    (noMarker ? '' : markerStr)
-                    + (noName ? '' : wrapInlineNameHTML(readableName, !noMarker, nameStyle as string))
-                    + (noValue ? '' : wrapInlineValueHTML(
-                        readableValueList, valueAlignRight, valueCloseToMarker, valueStyle as string
-                    )),
-                    topMarginForOuterGap
-                );
-        }
+        });
+        return gapLevel;
     }
-};
+    return 0;
+}
 
-
-function buildSubBlocks(
+function buildSection(
     ctx: TooltipMarkupBuildContext,
     fragment: TooltipMarkupSection,
     topMarginForOuterGap: number,
-    tooltipTextStyle: TooltipOption['textStyle']
-): MarkupText {
+    toolTipTextStyle: TooltipOption['textStyle']
+) {
+    const noHeader = fragment.noHeader;
+
+    const gaps = getGap(getBlockGapLevel(fragment));
+
     const subMarkupTextList: string[] = [];
     let subBlocks = fragment.blocks || [];
     assert(!subBlocks || isArray(subBlocks));
@@ -371,25 +269,108 @@ function buildSubBlocks(
         }
     }
 
-    const gaps = getGap(fragment);
     each(subBlocks, function (subBlock, idx) {
-        const subMarkupText = getBuilder(subBlock).build(
-            ctx,
+        const valueFormatter = fragment.valueFormatter;
+        const subMarkupText = getBuilder(subBlock)(
+            // Inherit valueFormatter
+            valueFormatter ? extend(extend({}, ctx), { valueFormatter }) : ctx,
             subBlock,
             idx > 0 ? gaps.html : 0,
-            tooltipTextStyle
+            toolTipTextStyle
         );
         subMarkupText != null && subMarkupTextList.push(subMarkupText);
     });
 
-    if (!subMarkupTextList.length) {
+    const subMarkupText = ctx.renderMode === 'richText'
+        ? subMarkupTextList.join(gaps.richText)
+        : wrapBlockHTML(
+            toolTipTextStyle,
+            subMarkupTextList.join(''),
+            noHeader ? topMarginForOuterGap : gaps.html
+        );
+
+    if (noHeader) {
+        return subMarkupText;
+    }
+
+    const displayableHeader = makeValueReadable(fragment.header, 'ordinal', ctx.useUTC);
+    const {nameStyle} = getTooltipTextStyle(toolTipTextStyle, ctx.renderMode);
+    const tooltipLineHeight = getTooltipLineHeight(toolTipTextStyle);
+    if (ctx.renderMode === 'richText') {
+        return wrapInlineNameRichText(ctx, displayableHeader, nameStyle as RichTextStyle) + gaps.richText
+            + subMarkupText;
+    }
+    else {
+        return wrapBlockHTML(
+            toolTipTextStyle,
+            `<div style="${nameStyle};${tooltipLineHeight};">`
+                + encodeHTML(displayableHeader)
+                + '</div>'
+                + subMarkupText,
+            topMarginForOuterGap
+        );
+    }
+}
+
+function buildNameValue(
+    ctx: TooltipMarkupBuildContext,
+    fragment: TooltipMarkupNameValueBlock,
+    topMarginForOuterGap: number,
+    toolTipTextStyle: TooltipOption['textStyle']
+) {
+    const renderMode = ctx.renderMode;
+    const noName = fragment.noName;
+    const noValue = fragment.noValue;
+    const noMarker = !fragment.markerType;
+    const name = fragment.name;
+    const useUTC = ctx.useUTC;
+    const valueFormatter = fragment.valueFormatter || ctx.valueFormatter || ((value) => {
+        value = isArray(value) ? value : [value];
+        return map(value as unknown[], (val, idx) => makeValueReadable(
+            val, isArray(valueTypeOption) ? valueTypeOption[idx] : valueTypeOption, useUTC
+        ));
+    });
+
+    if (noName && noValue) {
         return;
     }
 
-    return ctx.renderMode === 'richText'
-        ? subMarkupTextList.join(gaps.richText)
+    const markerStr = noMarker
+        ? ''
+        : ctx.markupStyleCreator.makeTooltipMarker(
+            fragment.markerType,
+            fragment.markerColor || tokens.color.secondary,
+            renderMode
+        );
+    const readableName = noName
+        ? ''
+        : makeValueReadable(name, 'ordinal', useUTC);
+    const valueTypeOption = fragment.valueType;
+    const readableValueList = noValue
+        ? []
+        : valueFormatter(fragment.value as OptionDataValue, fragment.rawDataIndex);
+    const valueAlignRight = !noMarker || !noName;
+    // It little weird if only value next to marker but far from marker.
+    const valueCloseToMarker = !noMarker && noName;
+
+    const {nameStyle, valueStyle} = getTooltipTextStyle(toolTipTextStyle, renderMode);
+
+    return renderMode === 'richText'
+        ? (
+            (noMarker ? '' : markerStr)
+            + (noName ? '' : wrapInlineNameRichText(ctx, readableName, nameStyle as RichTextStyle))
+            // Value has commas inside, so use ' ' as delimiter for multiple values.
+            + (noValue ? '' : wrapInlineValueRichText(
+                ctx, readableValueList, valueAlignRight, valueCloseToMarker, valueStyle as RichTextStyle
+            ))
+        )
         : wrapBlockHTML(
-            subMarkupTextList.join(''),
+            toolTipTextStyle,
+            (noMarker ? '' : markerStr)
+            + (noName ? '' : wrapInlineNameHTML(readableName, !noMarker, nameStyle as string))
+            + (noValue ? '' : wrapInlineValueHTML(
+                readableValueList, valueAlignRight, valueCloseToMarker, valueStyle as string
+            )),
             topMarginForOuterGap
         );
 }
@@ -399,6 +380,8 @@ interface TooltipMarkupBuildContext {
     renderMode: TooltipRenderMode;
     orderMode: TooltipOrderMode;
     markupStyleCreator: TooltipMarkupStyleCreator;
+
+    valueFormatter: CommonTooltipOption<unknown>['valueFormatter']
 }
 
 /**
@@ -417,35 +400,36 @@ export function buildTooltipMarkup(
     }
 
     const builder = getBuilder(fragment);
-    builder.planLayout(fragment);
     const ctx: TooltipMarkupBuildContext = {
         useUTC: useUTC,
         renderMode: renderMode,
         orderMode: orderMode,
-        markupStyleCreator: markupStyleCreator
+        markupStyleCreator: markupStyleCreator,
+        valueFormatter: fragment.valueFormatter
     };
-    return builder.build(ctx, fragment, 0, toolTipTextStyle);
+    return builder(ctx, fragment, 0, toolTipTextStyle);
 }
 
 
-function getGap(fragment: TooltipMarkupBlock): {
+function getGap(gapLevel: number): {
     html: number;
     richText: string
 } {
-    const gapLevelBetweenSubBlocks = fragment.__gapLevelBetweenSubBlocks;
     return {
-        html: HTML_GAPS[gapLevelBetweenSubBlocks],
-        richText: RICH_TEXT_GAPS[gapLevelBetweenSubBlocks]
+        html: HTML_GAPS[gapLevel],
+        richText: RICH_TEXT_GAPS[gapLevel]
     };
 }
 
 function wrapBlockHTML(
+    textStyle: TooltipOption['textStyle'],
     encodedContent: string,
     topGap: number
 ): string {
     const clearfix = '<div style="clear:both"></div>';
     const marginCSS = `margin: ${topGap}px 0 0`;
-    return `<div style="${marginCSS};${TOOLTIP_LINE_HEIGHT_CSS};">`
+    const tooltipLineHeight = getTooltipLineHeight(textStyle);
+    return `<div style="${marginCSS};${tooltipLineHeight};">`
         + encodedContent + clearfix
         + '</div>';
 }
@@ -462,7 +446,7 @@ function wrapInlineNameHTML(
 }
 
 function wrapInlineValueHTML(
-    valueList: string[],
+    valueList: string | string[],
     alignRight: boolean,
     valueCloseToMarker: boolean,
     style: string
@@ -470,6 +454,7 @@ function wrapInlineValueHTML(
     // Do not too close to marker, considering there are multiple values separated by spaces.
     const paddingStr = valueCloseToMarker ? '10px' : '20px';
     const alignCSS = alignRight ? `float:right;margin-left:${paddingStr}` : '';
+    valueList = isArray(valueList) ? valueList : [valueList];
     return (
         `<span style="${alignCSS};${style}">`
         // Value has commas inside, so use '  ' as delimiter for multiple values.
@@ -484,7 +469,7 @@ function wrapInlineNameRichText(ctx: TooltipMarkupBuildContext, name: string, st
 
 function wrapInlineValueRichText(
     ctx: TooltipMarkupBuildContext,
-    valueList: string[],
+    values: string | string[],
     alignRight: boolean,
     valueCloseToMarker: boolean,
     style: RichTextStyle
@@ -493,7 +478,10 @@ function wrapInlineValueRichText(
     const paddingLeft = valueCloseToMarker ? 10 : 20;
     alignRight && styles.push({ padding: [0, 0, 0, paddingLeft], align: 'right' });
     // Value has commas inside, so use '  ' as delimiter for multiple values.
-    return ctx.markupStyleCreator.wrapRichTextStyle(valueList.join('  '), styles);
+    return ctx.markupStyleCreator.wrapRichTextStyle(
+        isArray(values) ? values.join('  ') : values,
+        styles
+    );
 }
 
 
@@ -527,8 +515,8 @@ export function getPaddingFromTooltipModel(
 export class TooltipMarkupStyleCreator {
     readonly richTextStyles: Dictionary<Dictionary<unknown>> = {};
 
-    // Notice that "generate a style name" usuall happens repeatly when mouse moving and
-    // displaying a tooltip. So we put the `_nextStyleNameId` as a member of each creator
+    // Notice that "generate a style name" usually happens repeatedly when mouse is moving and
+    // a tooltip is displayed. So we put the `_nextStyleNameId` as a member of each creator
     // rather than static shared by all creators (which will cause it increase to fast).
     private _nextStyleNameId: number = getRandomIdBase();
 

@@ -19,38 +19,34 @@
 
 import { EChartsExtensionInstallRegisters } from '../../extension';
 
-import categoryFilter from './categoryFilter';
-import categoryVisual from './categoryVisual';
-import edgeVisual from './edgeVisual';
-import simpleLayout from './simpleLayout';
-import circularLayout from './circularLayout';
-import forceLayout from './forceLayout';
+import { graphEdgeVisualStageHandler } from './edgeVisual';
+import { graphSimpleLayoutStageHandler } from './simpleLayout';
+import { graphCircularLayoutStageHandler } from './circularLayout';
+import { graphForceLayoutStageHandler } from './forceLayout';
 import createView from './createView';
 import View from '../../coord/View';
 import GraphView from './GraphView';
-import GraphSeriesModel from './GraphSeries';
-import { RoamPaylod, updateCenterAndZoom } from '../../action/roamHelper';
-import GlobalModel from '../../model/Global';
+import GraphSeriesModel, { SERIES_TYPE_GRAPH } from './GraphSeries';
+import {registerRoamActionSimply} from '../../component/helper/roamHelper';
+import { noop } from 'zrender/src/core/util';
+import { graphCategoryFilterStageHandler } from './categoryFilter';
+import { graphCategoryVisualStageHandler } from './categoryVisual';
+import { COMPONENT_MAIN_TYPE_SERIES } from '../../util/types';
 
-const actionInfo = {
-    type: 'graphRoam',
-    event: 'graphRoam',
-    update: 'none'
-};
 
 export function install(registers: EChartsExtensionInstallRegisters) {
 
     registers.registerChartView(GraphView);
     registers.registerSeriesModel(GraphSeriesModel);
 
-    registers.registerProcessor(categoryFilter);
+    registers.registerProcessor(graphCategoryFilterStageHandler);
 
-    registers.registerVisual(categoryVisual);
-    registers.registerVisual(edgeVisual);
+    registers.registerVisual(graphCategoryVisualStageHandler);
+    registers.registerVisual(graphEdgeVisualStageHandler);
 
-    registers.registerLayout(simpleLayout);
-    registers.registerLayout(registers.PRIORITY.VISUAL.POST_CHART_LAYOUT, circularLayout);
-    registers.registerLayout(forceLayout);
+    registers.registerLayout(graphSimpleLayoutStageHandler);
+    registers.registerLayout(registers.PRIORITY.VISUAL.POST_CHART_LAYOUT, graphCircularLayoutStageHandler);
+    registers.registerLayout(graphForceLayoutStageHandler);
 
     registers.registerCoordinateSystem('graphView', {
         dimensions: View.dimensions,
@@ -62,30 +58,14 @@ export function install(registers: EChartsExtensionInstallRegisters) {
         type: 'focusNodeAdjacency',
         event: 'focusNodeAdjacency',
         update: 'series:focusNodeAdjacency'
-    }, function () {});
+    }, noop);
 
     registers.registerAction({
         type: 'unfocusNodeAdjacency',
         event: 'unfocusNodeAdjacency',
         update: 'series:unfocusNodeAdjacency'
-    }, function () {});
+    }, noop);
 
-    // Register roam action.
-    registers.registerAction(actionInfo, function (payload: RoamPaylod, ecModel: GlobalModel) {
-        ecModel.eachComponent({
-            mainType: 'series', query: payload
-        }, function (seriesModel: GraphSeriesModel) {
-            const coordSys = seriesModel.coordinateSystem as View;
-
-            const res = updateCenterAndZoom(coordSys, payload);
-
-            seriesModel.setCenter
-                && seriesModel.setCenter(res.center);
-
-            seriesModel.setZoom
-                && seriesModel.setZoom(res.zoom);
-        });
-    });
-
+    registerRoamActionSimply(registers, COMPONENT_MAIN_TYPE_SERIES, SERIES_TYPE_GRAPH);
 
 }

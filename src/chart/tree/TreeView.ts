@@ -23,20 +23,26 @@ import {getECData} from '../../util/innerStore';
 import SymbolClz from '../helper/Symbol';
 import {radialCoordinate} from './layoutHelper';
 import * as bbox from 'zrender/src/core/bbox';
-import View from '../../coord/View';
-import * as roamHelper from '../../component/helper/roamHelper';
-import RoamController, { RoamControllerHost } from '../../component/helper/RoamController';
-import {onIrrelevantElement} from '../../component/helper/cursorHelper';
+import {
+    applyViewCoordSysTransToElement, calcCompensationScaleToPreserveNodeSize,
+    VIEW_COORD_SYS_TRANS_OVERALL
+} from '../../coord/View';
+import RoamController from '../../component/helper/RoamController';
 import {parsePercent} from '../../util/number';
 import ChartView from '../../view/Chart';
-import TreeSeriesModel, { TreeSeriesOption, TreeSeriesNodeItemOption } from './TreeSeries';
+import TreeSeriesModel, { TreeSeriesOption, TreeSeriesNodeItemOption, SERIES_TYPE_TREE } from './TreeSeries';
 import Path, { PathProps, PathStyleProps } from 'zrender/src/graphic/Path';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
 import { TreeNode } from '../../data/Tree';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import { setStatesStylesFromModel, setStatesFlag, setDefaultStateProxy, HOVER_STATE_BLUR } from '../../util/states';
-import { ECElement } from '../../util/types';
+import { AnimationOption, ECElement, RoamPayload } from '../../util/types';
+import tokens from '../../visual/tokens';
+import {
+    createIsInSelfByPointerCheckerEl, createViewCoordSysSimply,
+    isRoamPayloadHasZoom, updateRoamControllerSimply
+} from '../../component/helper/roamHelper';
 
 type TreeSymbol = SymbolClz & {
     __edge: graphic.BezierCurve | TreePath
@@ -76,7 +82,7 @@ class TreePath extends Path<TreeEdgePathProps> {
 
     getDefaultStyle() {
         return {
-            stroke: '#000',
+            stroke: tokens.color.neutral99,
             fill: null as string
         };
     }
@@ -126,30 +132,23 @@ class TreePath extends Path<TreeEdgePathProps> {
 
 class TreeView extends ChartView {
 
-    static readonly type = 'tree';
-    readonly type = TreeView.type;
+    static readonly type = SERIES_TYPE_TREE;
+    readonly type = SERIES_TYPE_TREE;
 
     private _mainGroup = new graphic.Group();
 
     private _controller: RoamController;
-    private _controllerHost: RoamControllerHost;
 
-    private _data: List<TreeSeriesModel>;
+    private _data: SeriesData<TreeSeriesModel>;
 
-    private _nodeScaleRatio: number;
     private _min: number[];
     private _max: number[];
+    private _firstRender: boolean;
 
     init(ecModel: GlobalModel, api: ExtensionAPI) {
-
-
         this._controller = new RoamController(api.getZr());
-
-        this._controllerHost = {
-            target: this.group
-        } as RoamControllerHost;
-
         this.group.add(this._mainGroup);
+        this._firstRender = true;
     }
 
     render(
@@ -174,8 +173,15 @@ class TreeView extends ChartView {
             group.y = layoutInfo.y;
         }
 
-        this._updateViewCoordSys(seriesModel);
-        this._updateController(seriesModel, ecModel, api);
+        this._updateViewCoordSys(seriesModel, api);
+
+        updateRoamControllerSimply(
+            seriesModel,
+            api,
+            this._controller,
+            createIsInSelfByPointerCheckerEl(this.group),
+            null,
+        );
 
         const oldData = this._data;
 
@@ -208,8 +214,6 @@ class TreeView extends ChartView {
             })
             .execute();
 
-        this._nodeScaleRatio = seriesModel.get('nodeScaleRatio');
-
         this._updateNodeAndLinkScale(seriesModel);
 
         if (seriesModel.get('expandAndCollapse') === true) {
@@ -224,9 +228,28 @@ class TreeView extends ChartView {
             });
         }
         this._data = data;
+
+        this._firstRender = false;
     }
 
-    _updateViewCoordSys(seriesModel: TreeSeriesModel) {
+    __updateOnOwnRoam(
+        payload: RoamPayload,
+        seriesModel: TreeSeriesModel,
+        api: ExtensionAPI
+    ): void {
+        applyViewCoordSysTransToElement(
+            this.group,
+            VIEW_COORD_SYS_TRANS_OVERALL,
+            seriesModel.coordinateSystem,
+            null,
+        );
+
+        if (isRoamPayloadHasZoom(payload)) {
+            this._updateNodeAndLinkScale(seriesModel);
+        }
+    }
+
+    private _updateViewCoordSys(seriesModel: TreeSeriesModel, api: ExtensionAPI) {
         const data = seriesModel.getData();
         const points: number[][] = [];
         data.each(function (idx) {
@@ -254,101 +277,36 @@ class TreeView extends ChartView {
             max[1] = oldMax ? oldMax[1] : max[1] + 1;
         }
 
-        const viewCoordSys = seriesModel.coordinateSystem = new View();
-        viewCoordSys.zoomLimit = seriesModel.get('scaleLimit');
+        // Here we use viewCoordSys just for computing the 'position' and 'scale' of the group,
+        // and 'treeRoam' action.
+        const ownCoordSys = seriesModel.coordinateSystem = createViewCoordSysSimply(
+            seriesModel,
+            api,
+            min[0], min[1], max[0] - min[0], max[1] - min[1]
+        );
 
-        viewCoordSys.setBoundingRect(min[0], min[1], max[0] - min[0], max[1] - min[1]);
-
-        viewCoordSys.setCenter(seriesModel.get('center'));
-        viewCoordSys.setZoom(seriesModel.get('zoom'));
-
-        // Here we use viewCoordSys just for computing the 'position' and 'scale' of the group
-        this.group.attr({
-            x: viewCoordSys.x,
-            y: viewCoordSys.y,
-            scaleX: viewCoordSys.scaleX,
-            scaleY: viewCoordSys.scaleY
-        });
+        applyViewCoordSysTransToElement(
+            this.group,
+            VIEW_COORD_SYS_TRANS_OVERALL,
+            ownCoordSys,
+            this._firstRender ? null : seriesModel,
+        );
 
         this._min = min;
         this._max = max;
     }
 
-    _updateController(
-        seriesModel: TreeSeriesModel,
-        ecModel: GlobalModel,
-        api: ExtensionAPI
-    ) {
-        const controller = this._controller;
-        const controllerHost = this._controllerHost;
-        const group = this.group;
-        controller.setPointerChecker(function (e, x, y) {
-            const rect = group.getBoundingRect();
-            rect.applyTransform(group.transform);
-            return rect.contain(x, y)
-                && !onIrrelevantElement(e, api, seriesModel);
-        });
-
-        controller.enable(seriesModel.get('roam'));
-        controllerHost.zoomLimit = seriesModel.get('scaleLimit');
-        controllerHost.zoom = seriesModel.coordinateSystem.getZoom();
-
-        controller
-            .off('pan')
-            .off('zoom')
-            .on('pan', (e) => {
-                roamHelper.updateViewOnPan(controllerHost, e.dx, e.dy);
-                api.dispatchAction({
-                    seriesId: seriesModel.id,
-                    type: 'treeRoam',
-                    dx: e.dx,
-                    dy: e.dy
-                });
-            })
-            .on('zoom', (e) => {
-                roamHelper.updateViewOnZoom(controllerHost, e.scale, e.originX, e.originY);
-                api.dispatchAction({
-                    seriesId: seriesModel.id,
-                    type: 'treeRoam',
-                    zoom: e.scale,
-                    originX: e.originX,
-                    originY: e.originY
-                });
-                this._updateNodeAndLinkScale(seriesModel);
-                // Only update label layout on zoom
-                api.updateLabelLayout();
-            });
-    }
-
     _updateNodeAndLinkScale(seriesModel: TreeSeriesModel) {
         const data = seriesModel.getData();
-
-        const nodeScale = this._getNodeGlobalScale(seriesModel);
+        const nodeScale = calcCompensationScaleToPreserveNodeSize(seriesModel.coordinateSystem, seriesModel);
 
         data.eachItemGraphicEl(function (el: SymbolClz, idx) {
             el.setSymbolScale(nodeScale);
         });
     }
 
-    _getNodeGlobalScale(seriesModel: TreeSeriesModel) {
-        const coordSys = seriesModel.coordinateSystem;
-        if (coordSys.type !== 'view') {
-            return 1;
-        }
-
-        const nodeScaleRatio = this._nodeScaleRatio;
-
-        const groupZoom = coordSys.scaleX || 1;
-        // Scale node when zoom changes
-        const roamZoom = coordSys.getZoom();
-        const nodeScale = (roamZoom - 1) * nodeScaleRatio + 1;
-
-        return nodeScale / groupZoom;
-    }
-
     dispose() {
         this._controller && this._controller.dispose();
-        this._controllerHost = null;
     }
 
     remove() {
@@ -358,7 +316,7 @@ class TreeView extends ChartView {
 
 }
 
-function symbolNeedsDraw(data: List, dataIndex: number) {
+function symbolNeedsDraw(data: SeriesData, dataIndex: number) {
     const layout = data.getItemLayout(dataIndex);
 
     return layout
@@ -367,7 +325,7 @@ function symbolNeedsDraw(data: List, dataIndex: number) {
 
 
 function updateNode(
-    data: List,
+    data: SeriesData,
     dataIndex: number,
     symbolEl: TreeSymbol,
     group: graphic.Group,
@@ -378,7 +336,7 @@ function updateNode(
     const itemModel = node.getModel<TreeSeriesNodeItemOption>();
     const visualColor = (node.getVisual('style') as PathStyleProps).fill;
     const symbolInnerColor = node.isExpand === false && node.children.length !== 0
-            ? visualColor : '#fff';
+            ? visualColor : tokens.color.neutral00;
 
     const virtualRoot = data.tree.root;
 
@@ -435,7 +393,7 @@ function updateNode(
         let rad;
         let isLeft;
 
-        if (targetLayout.x === rootLayout.x && node.isExpand === true) {
+        if (targetLayout.x === rootLayout.x && node.isExpand === true && realRoot.children.length) {
             const center = {
                 x: (realRoot.children[0].getLayout().x + realRoot.children[length - 1].getLayout().x) / 2,
                 y: (realRoot.children[0].getLayout().y + realRoot.children[length - 1].getLayout().y) / 2
@@ -487,9 +445,11 @@ function updateNode(
 
     // Handle status
     const focus = itemModel.get(['emphasis', 'focus']);
-    const focusDataIndices: number[] = focus === 'ancestor'
-        ? node.getAncestorsIndices()
-        : focus === 'descendant' ? node.getDescendantIndices() : null;
+    const focusDataIndices: number[] = focus === 'relative'
+        ? zrUtil.concatArray(node.getAncestorsIndices(), node.getDescendantIndices()) as number[]
+        : focus === 'ancestor'
+            ? node.getAncestorsIndices()
+            : focus === 'descendant' ? node.getDescendantIndices() : null;
 
     if (focusDataIndices) {
         // Modify the focus to data indices.
@@ -535,6 +495,8 @@ function drawEdge(
     const edgeForkPosition = seriesModel.get('edgeForkPosition');
     const lineStyle = itemModel.getModel('lineStyle').getLineStyle();
     let edge = symbolEl.__edge;
+    // curve edge from node -> parent
+    // polyline edge from node -> children
     if (edgeShape === 'curve') {
         if (node.parentNode && node.parentNode !== virtualRoot) {
             if (!edge) {
@@ -583,7 +545,8 @@ function drawEdge(
         }
     }
 
-    if (edge) {
+    // show all edge when edgeShape is 'curve', filter node `isExpand` is false when edgeShape is 'polyline'
+    if (edge && !(edgeShape === 'polyline' && !node.isExpand)) {
         edge.useStyle(zrUtil.defaults({
             strokeNoScale: true, fill: null
         }, lineStyle));
@@ -595,44 +558,21 @@ function drawEdge(
     }
 }
 
-function removeNode(
-    data: List,
-    dataIndex: number,
-    symbolEl: TreeSymbol,
+function removeNodeEdge(
+    node: TreeNode,
+    data: SeriesData,
     group: graphic.Group,
-    seriesModel: TreeSeriesModel
+    seriesModel: TreeSeriesModel,
+    removeAnimationOpt: AnimationOption
 ) {
-    const node = data.tree.getNodeByDataIndex(dataIndex);
     const virtualRoot = data.tree.root;
+    const { source, sourceLayout } = getSourceNode(virtualRoot, node);
 
-    let source = node.parentNode === virtualRoot ? node : node.parentNode || node;
-    // let edgeShape = seriesScope.edgeShape;
-    let sourceLayout;
-    while (sourceLayout = source.getLayout(), sourceLayout == null) {
-        source = source.parentNode === virtualRoot ? source : source.parentNode || source;
+    const symbolEl: TreeSymbol = data.getItemGraphicEl(node.dataIndex) as TreeSymbol;
+
+    if (!symbolEl) {
+        return;
     }
-
-    // Use same duration and easing with update to have more consistent animation.
-    const removeAnimationOpt = {
-        duration: seriesModel.get('animationDurationUpdate') as number,
-        easing: seriesModel.get('animationEasingUpdate')
-    };
-
-    graphic.removeElement(symbolEl, {
-        x: sourceLayout.x + 1,
-        y: sourceLayout.y + 1
-    }, seriesModel, {
-        cb() {
-            group.remove(symbolEl);
-            data.setItemGraphicEl(dataIndex, null);
-        },
-        removeOpt: removeAnimationOpt
-    });
-
-    symbolEl.fadeOut(null, {
-        fadeLabel: true,
-        animation: removeAnimationOpt
-    });
 
     const sourceSymbolEl = data.getItemGraphicEl(source.dataIndex) as TreeSymbol;
     const sourceEdge = sourceSymbolEl.__edge;
@@ -686,6 +626,60 @@ function removeNode(
             });
         }
     }
+}
+
+function getSourceNode(virtualRoot: TreeNode, node: TreeNode): { source: TreeNode, sourceLayout: TreeNodeLayout } {
+    let source = node.parentNode === virtualRoot ? node : node.parentNode || node;
+    let sourceLayout;
+    while (sourceLayout = source.getLayout(), sourceLayout == null) {
+        source = source.parentNode === virtualRoot ? source : source.parentNode || source;
+    }
+    return {
+        source,
+        sourceLayout
+    };
+}
+
+function removeNode(
+    data: SeriesData,
+    dataIndex: number,
+    symbolEl: TreeSymbol,
+    group: graphic.Group,
+    seriesModel: TreeSeriesModel
+) {
+    const node = data.tree.getNodeByDataIndex(dataIndex);
+    const virtualRoot = data.tree.root;
+
+    const { sourceLayout } = getSourceNode(virtualRoot, node);
+
+    // Use same duration and easing with update to have more consistent animation.
+    const removeAnimationOpt = {
+        duration: seriesModel.get('animationDurationUpdate') as number,
+        easing: seriesModel.get('animationEasingUpdate')
+    };
+
+    graphic.removeElement(symbolEl, {
+        x: sourceLayout.x + 1,
+        y: sourceLayout.y + 1
+    }, seriesModel, {
+        cb() {
+            group.remove(symbolEl);
+            data.setItemGraphicEl(dataIndex, null);
+        },
+        removeOpt: removeAnimationOpt
+    });
+
+    symbolEl.fadeOut(null, data.hostModel as TreeSeriesModel, {
+        fadeLabel: true,
+        animation: removeAnimationOpt
+    });
+
+    // remove edge as parent node
+    zrUtil.each(node.children, function (childNode) {
+        removeNodeEdge(childNode, data, group, seriesModel, removeAnimationOpt);
+    });
+    // remove edge as child node
+    removeNodeEdge(node, data, group, seriesModel, removeAnimationOpt);
 }
 
 function getEdgeShape(

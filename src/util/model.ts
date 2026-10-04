@@ -27,12 +27,15 @@ import {
     assert,
     isString,
     indexOf,
-    isStringSafe
+    isStringSafe,
+    isNumber,
+    hasOwn,
+    retrieve2,
 } from 'zrender/src/core/util';
 import env from 'zrender/src/core/env';
-import GlobalModel from '../model/Global';
+import GlobalModel, { QueryConditionKindA } from '../model/Global';
 import ComponentModel, {ComponentModelConstructor} from '../model/Component';
-import List from '../data/List';
+import SeriesData from '../data/SeriesData';
 import {
     ComponentOption,
     ComponentMainType,
@@ -44,15 +47,28 @@ import {
     Payload,
     OptionId,
     OptionName,
-    InterpolatableValue
+    InterpolatableValue,
+    NullUndefined,
+    SeriesOption,
+    SeriesLargeOptionMixin,
+    StageHandler,
+    StageHandlerOverallReset,
 } from './types';
 import { Dictionary } from 'zrender/src/core/types';
-import SeriesModel from '../model/Series';
-import CartesianAxisModel from '../coord/cartesian/AxisModel';
-import GridModel from '../coord/cartesian/GridModel';
-import { isNumeric, getRandomIdBase, getPrecisionSafe, round } from './number';
-import { interpolateNumber } from 'zrender/src/animation/Animator';
-import { warn } from './log';
+import type SeriesModel from '../model/Series';
+import type CartesianAxisModel from '../coord/cartesian/AxisModel';
+import type GridModel from '../coord/cartesian/GridModel';
+import { isNumeric, getRandomIdBase, getPrecision, round } from './number';
+import { error, warn } from './log';
+import type Model from '../model/Model';
+import type Displayable from 'zrender/src/graphic/Displayable';
+import type ChartView from '../view/Chart';
+import type { Pipeline, PipelineContext } from '../core/Scheduler';
+import { TaskProgressParams } from '../core/task';
+
+function interpolateNumber(p0: number, p1: number, percent: number): number {
+    return (p1 - p0) * percent + p0;
+}
 
 /**
  * Make the name displayable. But we should
@@ -128,9 +144,9 @@ export const TEXT_STYLE_OPTIONS = [
 // ]);
 
 /**
- * The method do not ensure performance.
+ * The method does not ensure performance.
  * data could be [12, 2323, {value: 223}, [1221, 23], {value: [2, 23]}]
- * This helper method retieves value from data.
+ * This helper method retrieves value from data.
  */
 export function getDataItemValue(
     dataItem: OptionDataItem
@@ -150,8 +166,8 @@ export function isDataItemOption(dataItem: OptionDataItem): boolean {
         // && !(dataItem[0] && isObject(dataItem[0]) && !(dataItem[0] instanceof Array));
 }
 
-// Compatible with previous definition: id could be number (but not recommanded).
-// number and string are trade the same when compare.
+// Compatible with previous definition: id could be number (but not recommended).
+// number and string are treated the same when compared.
 // number id will not be converted to string in option.
 // number id will be converted to string in component instance id.
 export interface MappingExistingItem {
@@ -197,17 +213,17 @@ type MappingToExistsMode = 'normalMerge' | 'replaceMerge' | 'replaceAll';
  *
  * Mode "replaceMege":
  *     (1) Only the id mapped components will be merged.
- *     (2) Other existing components (except internal compoonets) will be removed.
+ *     (2) Other existing components (except internal components) will be removed.
  *     (3) Other new options will be used to create new component.
- *     (4) The index of the existing compoents will not be modified.
+ *     (4) The index of the existing components will not be modified.
  *     That means their might be "hole" after the removal.
  *     The new components are created first at those available index.
  *
  * Mode "replaceAll":
  *     This mode try to support that reproduce an echarts instance from another
  *     echarts instance (via `getOption`) in some simple cases.
- *     In this senario, the `result` index are exactly the consistent with the `newCmptOptions`,
- *     which ensures the compoennt index referring (like `xAxisIndex: ?`) corrent. That is,
+ *     In this scenario, the `result` index are exactly the consistent with the `newCmptOptions`,
+ *     which ensures the component index referring (like `xAxisIndex: ?`) corrent. That is,
  *     the "hole" in `newCmptOptions` will also be kept.
  *     On the contrary, other modes try best to eliminate holes.
  *     PENDING: This is an experimental mode yet.
@@ -266,7 +282,7 @@ export function mappingToExists<T extends MappingExistingItem>(
     makeIdAndName(result);
 
     // The array `result` MUST NOT contain elided items, otherwise the
-    // forEach will ommit those items and result in incorrect result.
+    // forEach will omit those items and result in incorrect result.
     return result;
 }
 
@@ -282,7 +298,7 @@ function prepareResult<T extends MappingExistingItem>(
     }
 
     // Do not use native `map` to in case that the array `existings`
-    // contains elided items, which will be ommited.
+    // contains elided items, which will be omitted.
     for (let index = 0; index < existings.length; index++) {
         const existing = existings[index];
         // Because of replaceMerge, `existing` may be null/undefined.
@@ -419,7 +435,7 @@ function mappingInReplaceAllMode<T extends MappingExistingItem>(
 ): void {
     each(newCmptOptions, function (cmptOption) {
         // The feature "reproduce" requires "hole" will also reproduced
-        // in case that compoennt index referring are broken.
+        // in case that component index referring are broken.
         result.push({
             newOption: cmptOption,
             brandNew: true,
@@ -478,7 +494,7 @@ function makeIdAndName(
             return;
         }
 
-        // name can be overwitten. Consider case: axis.name = '20km'.
+        // Name can be overwritten. Consider case: axis.name = '20km'.
         // But id generated by name will not be changed, which affect
         // only in that case: setOption with 'not merge mode' and view
         // instance will be recreated, which can be accepted.
@@ -486,7 +502,7 @@ function makeIdAndName(
             ? makeComparableKey(opt.name)
             : existing
             ? existing.name
-            // Avoid diffferent series has the same name,
+            // Avoid that different series has the same name,
             // because name may be used like in color pallet.
             : DUMMY_COMPONENT_NAME_PREFIX + index;
 
@@ -540,10 +556,9 @@ export function convertOptionIdName(idOrName: unknown, defaultValue: string): st
     if (idOrName == null) {
         return defaultValue;
     }
-    const type = typeof idOrName;
-    return type === 'string'
-        ? idOrName as string
-        : (type === 'number' || isStringSafe(idOrName))
+    return isString(idOrName)
+        ? idOrName
+        : (isNumber(idOrName) || isStringSafe(idOrName))
         ? idOrName + ''
         : defaultValue;
 }
@@ -686,7 +701,7 @@ export function compressBatches(
  *                         each of which can be Array or primary type.
  * @return dataIndex If not found, return undefined/null.
  */
-export function queryDataIndex(data: List, payload: Payload & {
+export function queryDataIndex(data: SeriesData, payload: Payload & {
     dataIndexInside?: number | number[]
     dataIndex?: number | number[]
     name?: string | string[]
@@ -711,11 +726,15 @@ export function queryDataIndex(data: List, payload: Payload & {
 }
 
 /**
+ * [CAVEAT]:
+ *  DO NOT use it in performance-sensitive scenarios.
+ *  Likely a hash map lookup; not inline-cache friendly.
+ *
  * Enable property storage to any host object.
  * Notice: Serialization is not supported.
  *
  * For example:
- * let inner = zrUitl.makeInner();
+ * let inner = makeInner();
  *
  * function some1(hostObj) {
  *      inner(hostObj).someProperty = 1212;
@@ -727,10 +746,8 @@ export function queryDataIndex(data: List, payload: Payload & {
  *      fields.someProperty2 = 'xx';
  *      ...
  * }
- *
- * @return {Function}
  */
-export function makeInner<T, Host extends object>() {
+export function makeInner<T extends object, Host extends object>() {
     const key = '__ec_inner_' + innerUniqueIndex++;
     return function (hostObj: Host): T {
         return (hostObj as any)[key] || ((hostObj as any)[key] = {});
@@ -762,9 +779,9 @@ let innerUniqueIndex = getRandomIdBase();
  * If both `abcIndex`, `abcId`, `abcName` specified, only one work.
  * The priority is: index > id > name, the same with `ecModel.queryComponents`.
  */
-export type ModelFinderIndexQuery = number | number[] | 'all' | 'none' | false;
-export type ModelFinderIdQuery = OptionId | OptionId[];
-export type ModelFinderNameQuery = OptionId | OptionId[];
+export type ModelFinderIndexQuery = number | number[] | 'all' | 'none' | false | NullUndefined;
+export type ModelFinderIdQuery = OptionId | OptionId[] | NullUndefined;
+export type ModelFinderNameQuery = OptionId | OptionId[] | NullUndefined;
 // If string, like 'series', means { seriesIndex: 0 }.
 export type ModelFinder = string | ModelFinderObject;
 export type ModelFinderObject = {
@@ -774,6 +791,7 @@ export type ModelFinderObject = {
     xAxisIndex?: ModelFinderIndexQuery, xAxisId?: ModelFinderIdQuery, xAxisName?: ModelFinderNameQuery
     yAxisIndex?: ModelFinderIndexQuery, yAxisId?: ModelFinderIdQuery, yAxisName?: ModelFinderNameQuery
     gridIndex?: ModelFinderIndexQuery, gridId?: ModelFinderIdQuery, gridName?: ModelFinderNameQuery
+    matrixIndex?: ModelFinderIndexQuery, matrixId?: ModelFinderIdQuery, matrixName?: ModelFinderNameQuery
     dataIndex?: number, dataIndexInside?: number
     // ... (can be extended)
 };
@@ -871,7 +889,7 @@ export function preParseFinder(
     let mainTypeSpecified = false;
 
     each(finder, function (value, key) {
-        // Exclude 'dataIndex' and other illgal keys.
+        // Exclude 'dataIndex' and other illegal keys.
         if (key === 'dataIndex' || key === 'dataIndexInside') {
             others[key] = value as number;
             return;
@@ -909,7 +927,7 @@ export const SINGLE_REFERRING: QueryReferringOpt = { useDefault: true, enableAll
 export const MULTIPLE_REFERRING: QueryReferringOpt = { useDefault: false, enableAll: true, enableNone: true };
 
 export type QueryReferringOpt = {
-    // Whether to use the first componet as the default if none of index/id/name are specified.
+    // Whether to use the first component as the default if none of index/id/name are specified.
     useDefault?: boolean;
     // Whether to enable `'all'` on index option.
     enableAll?: boolean;
@@ -948,16 +966,32 @@ export function queryReferringComponents(
     }
 
     if (indexOption === 'none' || indexOption === false) {
-        assert(opt.enableNone, '`"none"` or `false` is not a valid value on index option.');
-        result.models = [];
-        return result;
+        if (opt.enableNone) {
+            result.models = [];
+            return result;
+        }
+        else {
+            // Do not throw; consider if some component previously does not use this method,
+            // and start to use it, need to be fault-tolerant for backward compatibility.
+            if (__DEV__) {
+                error('`"none"` or `false` is not a valid value on index option.');
+            }
+            indexOption = -1; // Can not query by index but may still query by id/name if specified.
+        }
     }
 
     // `queryComponents` will return all components if
     // both all of index/id/name are null/undefined.
     if (indexOption === 'all') {
-        assert(opt.enableAll, '`"all"` is not a valid value on index option.');
-        indexOption = idOption = nameOption = null;
+        if (opt.enableAll) {
+            indexOption = idOption = nameOption = null;
+        }
+        else {
+            if (__DEV__) {
+                error('`"all"` is not a valid value on index option.');
+            }
+            indexOption = -1;
+        }
     }
     result.models = ecModel.queryComponents({
         mainType: mainType,
@@ -966,6 +1000,33 @@ export function queryReferringComponents(
         name: nameOption
     });
     return result;
+}
+
+/**
+ * `{{mainType}Id, {mainType}Index, {mainType}Name}` takes precedence if provided in `payload`;
+ * otherwise, query by `mainType`.
+ * `subType` performs futher filtering if provided.
+ */
+export function makeQueryConditionKindA(
+    payload: Payload,
+    // `mainType` is mandatory to restrict the range of query,
+    // since `payload` in an user input.
+    mainType: ComponentMainType,
+    // subType may be '' by `parseClassType`
+    subType: ComponentSubType | NullUndefined,
+): QueryConditionKindA {
+    if (__DEV__) {
+        assert(mainType);
+    }
+    const query: QueryConditionKindA['query'] = {};
+    query[mainType + 'Id'] = payload[mainType + 'Id'];
+    query[mainType + 'Index'] = payload[mainType + 'Index'];
+    query[mainType + 'Name'] = payload[mainType + 'Name'];
+
+    const condition = {mainType: mainType, query: query} as QueryConditionKindA;
+    subType && (condition.subType = subType); // subType is determined by `hasOwnProperty`.
+
+    return condition;
 }
 
 export function setAttribute(dom: HTMLElement, key: string, value: any) {
@@ -1032,7 +1093,7 @@ export function groupData<T, R extends string | number>(
  *                     Other cases do not supported.
  */
 export function interpolateRawValues(
-    data: List,
+    data: SeriesData,
     precision: number | 'auto',
     sourceValue: InterpolatableValue,
     targetValue: InterpolatableValue,
@@ -1044,7 +1105,7 @@ export function interpolateRawValues(
         return targetValue;
     }
 
-    if (typeof targetValue === 'number') {
+    if (isNumber(targetValue)) {
         const value = interpolateNumber(
             sourceValue as number || 0,
             targetValue as number,
@@ -1053,13 +1114,13 @@ export function interpolateRawValues(
         return round(
             value,
             isAutoPrecision ? Math.max(
-                getPrecisionSafe(sourceValue as number || 0),
-                getPrecisionSafe(targetValue as number)
+                getPrecision(sourceValue as number || 0),
+                getPrecision(targetValue as number)
             )
             : precision as number
         );
     }
-    else if (typeof targetValue === 'string') {
+    else if (isString(targetValue)) {
         return percent < 1 ? sourceValue : targetValue;
     }
     else {
@@ -1070,7 +1131,7 @@ export function interpolateRawValues(
         for (let i = 0; i < length; ++i) {
             const info = data.getDimensionInfo(i);
             // Don't interpolate ordinal dims
-            if (info.type === 'ordinal') {
+            if (info && info.type === 'ordinal') {
                 // In init, there is no `sourceValue`, but should better not to get undefined result.
                 interpolated[i] = (percent < 1 && leftArr ? leftArr : rightArr)[i] as number;
             }
@@ -1081,8 +1142,8 @@ export function interpolateRawValues(
                 interpolated[i] = round(
                     value,
                     isAutoPrecision ? Math.max(
-                        getPrecisionSafe(leftVal),
-                        getPrecisionSafe(rightVal)
+                        getPrecision(leftVal),
+                        getPrecision(rightVal)
                     )
                     : precision as number
                 );
@@ -1090,4 +1151,294 @@ export function interpolateRawValues(
         }
         return interpolated;
     }
+}
+
+/**
+ * Use an iterator to avoid exposing the internal list or duplicating it
+ * for the outside traveller, and no extra heap allocation.
+ * @usage
+ *  for (const it = resetIterator(); it.next();) {
+ *      const item = it.item;
+ *      const key = it.key;
+ *      const itIdx = it.itIdx;
+ *      // ...
+ *  }
+ * @usage
+ *  const it = resetIterator();
+ *  while (it.next()) { ... }
+ * @usage
+ *  for (resetIterator(it); it.next();) { ... }
+ */
+export class ListIterator<TItem> {
+
+    private _idx: number;
+    private _end: number;
+    private _list: TItem[];
+    private _step: number;
+
+    item: TItem | NullUndefined;
+    key: number;
+
+    /**
+     * The loop condition is `idx < end` if `step > 0`;
+     * The loop condition is `idx >= end` if `step < 0`.
+     *
+     * @param end By default `list.length` if `step > 0`; `0` if `step < 0`.
+     * @param step By default `1`.
+     */
+    reset(list: TItem[], start: number, end?: number, step?: number): ListIterator<TItem> {
+        this._list = list;
+        this._step = step = step || 1;
+        this._idx = start;
+        this._end = end != null ? end : step > 0 ? list.length : 0;
+
+        this.item = null;
+        this.key = NaN;
+
+        return this;
+    }
+
+    next(): boolean {
+        if (this._step > 0 ? this._idx < this._end : this._idx >= this._end) {
+            this.item = this._list[this._idx];
+            this.key = this._idx = this._idx + this._step;
+            return true;
+        }
+        return false;
+    }
+}
+
+export function clearTmpModel(model: Model): void {
+    // Clear to avoid memory leak.
+    model.option = model.parentModel = model.ecModel = null;
+}
+
+export function initExtentForUnion(): [number, number] {
+    return [Infinity, -Infinity];
+}
+
+/**
+ * NOTICE:
+ *  - The input `val` must be a number - type checking is not performed.
+ *  - `extent` should be initialized as `initExtentForUnion()`.
+ */
+export function unionExtentFromNumber(extent: number[], val: number | NullUndefined): void {
+    if (isValidNumberForExtent(val)) {
+        val < extent[0] && (extent[0] = val);
+        val > extent[1] && (extent[1] = val);
+    }
+}
+
+/**
+ * NOTICE:
+ *  - The input `val` must be a number - type checking is not performed.
+ *  - `extent` should be initialized as `initExtentForUnion()`.
+ */
+export function unionExtentStartFromNumber(extent: number[], val: number | NullUndefined): void {
+    if (isValidNumberForExtent(val) && val < extent[0]) {
+        extent[0] = val;
+    }
+}
+
+/**
+ * NOTICE:
+ *  - The input `val` must be a number - type checking is not performed.
+ *  - `extent` should be initialized as `initExtentForUnion()`.
+ */
+export function unionExtentEndFromNumber(extent: number[], val: number | NullUndefined): void {
+    if (isValidNumberForExtent(val) && val > extent[1]) {
+        extent[1] = val;
+    }
+}
+
+/**
+ * NOTICE:
+ *  - `extent` should be initialized as `initExtentForUnion()`.
+ */
+export function unionExtentFromExtent(tarExtent: number[], srcExtent: number[]): void {
+    // Accept both or neither.
+    if (isValidBoundsForExtent(srcExtent[0], srcExtent[1])) {
+        srcExtent[0] < tarExtent[0] && (tarExtent[0] = srcExtent[0]);
+        srcExtent[1] > tarExtent[1] && (tarExtent[1] = srcExtent[1]);
+    }
+}
+
+/**
+ * PENDING: `Infinity` from user data is not necessarily meaningless, but visualizing it requires
+ * special handling and it will not be supported until required. So we simply ignore it here.
+ */
+export function isValidNumberForExtent(val: number | NullUndefined): boolean {
+    // Considered that number could be `NaN` and `Infinity` and should not write into the extent.
+    // Note that `Infinity` is the initialized value from `initExtentForUnion` and may be inputted.
+    return val != null && isFinite(val);
+}
+
+export function isValidBoundsForExtent(start: number, end: number): boolean {
+    return isValidNumberForExtent(start) && isValidNumberForExtent(end) && start <= end;
+}
+
+/**
+ * `extent` should be initialized by `initExtentForUnion()`, and unioned by `unionExtent()`.
+ * `extent` may contain `Infinity` / `NaN`, but assume no `null`/`undefined`.
+ */
+export function extentHasValue(extent: number[]): boolean {
+    // Also considered extent may have `NaN` and `Infinity`.
+    const span = extent[1] - extent[0];
+    return isFinite(span) && span >= 0;
+}
+
+/**
+ * NOTE: considered items are null/undefined/NaN - do nothing for this case.
+ */
+export function ensureExtentAscSimply(extent: (number | NullUndefined)[]): void {
+    if (isValidBoundsForExtent(extent[0], extent[1]) && extent[0] > extent[1]) {
+        extent[0] = extent[1];
+    }
+}
+
+/**
+ * A util for ensuring the callback is called only once.
+ * @usage
+ *  const callOnlyOnce = makeCallOnlyOnce(); // Should be static (ESM top level).
+ *  function someFunc(registers: EChartsExtensionInstallRegisters): void {
+ *      callOnlyOnce(registers, function () {
+ *          // Do something immediately and only once per registers.
+ *      }
+ *  }
+ */
+export function makeCallOnlyOnce<Host extends object>() {
+    const hiddenKey = '__ec_once_' + onceUniqueIndex++;
+    return function (hostObj: Host, cb: () => void) {
+        if (__DEV__) {
+            assert(hostObj);
+        }
+        if (!hasOwn(hostObj, hiddenKey)) {
+            (hostObj as any)[hiddenKey] = 1;
+            cb();
+        }
+    };
+}
+let onceUniqueIndex = getRandomIdBase();
+
+
+/**
+ * @usage
+ *  - The earlier item takes precedence for duplicate items.
+ *  - The input `arr` will be modified if `resolve` is null/undefined.
+ *  - Callers can use `resolve` to manually modify the `currItem`.
+ *    The input `arr` will not be modified if `resolve` is passed.
+ *    `resolve` will be called on every item.
+ *  - Callers need to handle null/undefined (if existing) in `getKey`.
+ */
+export function removeDuplicates<TItem>(
+    arr: (TItem | NullUndefined)[],
+    getKey: (item: TItem) => string,
+    // `existingCount`: the count before this item is added.
+    resolve: ((item: TItem, existingCount: number) => void) | NullUndefined,
+): void {
+    const dupMap = createHashMap<number, string>();
+    let writeIdx = 0;
+    each(arr, function (item) {
+        const key = getKey(item);
+        if (__DEV__) {
+            assert(isString(key));
+        }
+        const count = dupMap.get(key) || 0;
+        if (resolve) {
+            resolve(item, count);
+        }
+        if (!count && !resolve) {
+            arr[writeIdx++] = item;
+        }
+        dupMap.set(key, count + 1);
+    });
+    if (!resolve) {
+        arr.length = writeIdx;
+    }
+}
+
+export function removeDuplicatesGetKeyFromValueProp<TValue extends (string | number)>(
+    item: {value: TValue}
+): string {
+    if (__DEV__) {
+        assert(item.value != null);
+    }
+    return item.value + '';
+}
+
+export function removeDuplicatesGetKeyFromItemItself<TValue extends (string | number)>(
+    item: TValue
+): string {
+    if (__DEV__) {
+        assert(item != null);
+    }
+    return item + '';
+}
+
+export function getIncrementalId(
+    seriesModel: SeriesModel,
+    useIncremental?: boolean
+): Displayable['incremental'] {
+    // 0 means disable incremental.
+    // 1 is preserved for backward compatibility.
+    return retrieve2(useIncremental, true)
+        ? seriesModel.seriesIndex + 2
+        : 0;
+}
+
+export function preparePipelineContext(
+    seriesModel: SeriesModel<SeriesOption & SeriesLargeOptionMixin>,
+    view: ChartView,
+    pipeline: Pick<Pipeline, 'progressiveEnabled' | 'threshold'>,
+): PipelineContext {
+    const dataLen = seriesModel.getData().count();
+    return {
+        progressiveRender: pipeline.progressiveEnabled
+            && view.incrementalPrepareRender
+            && dataLen >= pipeline.threshold,
+        large: seriesModel.get('large') && dataLen >= seriesModel.get('largeThreshold'),
+        // TODO: modDataCount should not updated if `appendData`, otherwise cause whole repaint.
+        // see `test/candlestick-large3.html`
+        modDataCount: seriesModel.get('progressiveChunkMode') === 'mod'
+            ? seriesModel.getData().count() : null,
+    };
+}
+
+/**
+ * When some task "blocks" the upstream part of the pipeline, the upstream output (typically, a TypedArray
+ * to carry layout points, e.g., `data.getLayout('points')`) range is from the start to the final end.
+ * A downstream comsumer should either properly record cursors when reading from the upstream output,
+ * or fail fast on that usage.
+ * Otherwise, take the `data.getLayout('points')` as an example, repeatedly merging it with the existing
+ * shape path can create a big path, which degrades performance but is hard to detect.
+ *
+ * This method provides an assertion for that.
+ */
+export function validateUpstreamOutputRange(
+    // null/undefined is not allowed, otherwise bug-prone.
+    upstreamOutputRange: Pick<TaskProgressParams, 'start' | 'end'>,
+    thisTaskPlannedRange: Pick<TaskProgressParams, 'start' | 'end'>
+): void {
+    assert(
+        upstreamOutputRange.start === thisTaskPlannedRange.start
+        && upstreamOutputRange.end === thisTaskPlannedRange.end
+    );
+}
+
+export function createSimpleOverallStageHandler(
+    seriesType: ComponentSubType,
+    overallReset: StageHandlerOverallReset
+): StageHandler {
+    return {
+        seriesType: seriesType,
+        overallReset: overallReset
+    };
+}
+
+export function createSimpleOverallStageHandler2(
+    overallReset: StageHandlerOverallReset
+): StageHandler {
+    return {
+        overallReset: overallReset
+    };
 }

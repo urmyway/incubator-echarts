@@ -17,56 +17,40 @@
 * under the License.
 */
 
-import {parsePercent, linearMap} from '../../util/number';
-import * as layout from '../../util/layout';
-import * as zrUtil from 'zrender/src/core/util';
+import { linearMap } from '../../util/number';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
-import PieSeriesModel from './PieSeries';
+import PieSeriesModel, { SERIES_TYPE_PIE } from './PieSeries';
+import { normalizeArcAngles } from 'zrender/src/core/PathProxy';
+import { createSimpleOverallStageHandler, makeInner } from '../../util/model';
+import { getCircleLayout } from '../../util/layout';
+
 
 const PI2 = Math.PI * 2;
 const RADIAN = Math.PI / 180;
 
-function getViewRect(seriesModel: PieSeriesModel, api: ExtensionAPI) {
-    return layout.getLayoutRect(
-        seriesModel.getBoxLayoutParams(), {
-            width: api.getWidth(),
-            height: api.getHeight()
-        }
-    );
-}
 
-export default function pieLayout(
-    seriesType: 'pie',
+export const pieLayoutStageHandler = createSimpleOverallStageHandler(SERIES_TYPE_PIE, pieLayout);
+
+function pieLayout(
     ecModel: GlobalModel,
     api: ExtensionAPI
-) {
-    ecModel.eachSeriesByType(seriesType, function (seriesModel: PieSeriesModel) {
+): void {
+    ecModel.eachSeriesByType(SERIES_TYPE_PIE, function (seriesModel: PieSeriesModel) {
         const data = seriesModel.getData();
         const valueDim = data.mapDimension('value');
-        const viewRect = getViewRect(seriesModel, api);
 
-        let center = seriesModel.get('center');
-        let radius = seriesModel.get('radius');
+        const { cx, cy, r, r0, viewRect } = getCircleLayout(seriesModel, api);
 
-        if (!zrUtil.isArray(radius)) {
-            radius = [0, radius];
-        }
-        if (!zrUtil.isArray(center)) {
-            center = [center, center];
-        }
+        let startAngle = -seriesModel.get('startAngle') * RADIAN;
+        let endAngle = seriesModel.get('endAngle');
+        const padAngle = seriesModel.get('padAngle') * RADIAN;
 
-        const width = parsePercent(viewRect.width, api.getWidth());
-        const height = parsePercent(viewRect.height, api.getHeight());
-        const size = Math.min(width, height);
-        const cx = parsePercent(center[0], width) + viewRect.x;
-        const cy = parsePercent(center[1], height) + viewRect.y;
-        const r0 = parsePercent(radius[0], size / 2);
-        const r = parsePercent(radius[1], size / 2);
-
-        const startAngle = -seriesModel.get('startAngle') * RADIAN;
+        endAngle = endAngle === 'auto' ? startAngle - PI2 : -endAngle * RADIAN;
 
         const minAngle = seriesModel.get('minAngle') * RADIAN;
+
+        const minAndPadAngle = minAngle + padAngle;
 
         let validDataCount = 0;
         data.each(valueDim, function (value: number) {
@@ -86,13 +70,31 @@ export default function pieLayout(
         const extent = data.getDataExtent(valueDim);
         extent[0] = 0;
 
+        const dir = clockwise ? 1 : -1;
+        const angles = [startAngle, endAngle];
+        const halfPadAngle = dir * padAngle / 2;
+        normalizeArcAngles(angles, !clockwise);
+
+        [startAngle, endAngle] = angles;
+
+        const layoutData = getSeriesLayoutData(seriesModel);
+        layoutData.startAngle = startAngle;
+        layoutData.endAngle = endAngle;
+        layoutData.clockwise = clockwise;
+        layoutData.cx = cx;
+        layoutData.cy = cy;
+        layoutData.r = r;
+        layoutData.r0 = r0;
+
+        const angleRange = Math.abs(endAngle - startAngle);
+
         // In the case some sector angle is smaller than minAngle
-        let restAngle = PI2;
+        let restAngle = angleRange;
         let valueSumLargerThanMinAngle = 0;
 
         let currentAngle = startAngle;
-        const dir = clockwise ? 1 : -1;
 
+        // Requird by `pieLabelLayout`.
         data.setLayout({ viewRect, r });
 
         data.each(valueDim, function (value: number, idx: number) {
@@ -119,22 +121,37 @@ export default function pieLayout(
                     ? unitRadian : (value * unitRadian);
             }
             else {
-                angle = PI2 / validDataCount;
+                angle = angleRange / validDataCount;
             }
 
-            if (angle < minAngle) {
-                angle = minAngle;
-                restAngle -= minAngle;
+
+            if (angle < minAndPadAngle) {
+                angle = minAndPadAngle;
+                restAngle -= minAndPadAngle;
             }
             else {
                 valueSumLargerThanMinAngle += value;
             }
 
             const endAngle = currentAngle + dir * angle;
+
+            // calculate display angle
+            let actualStartAngle = 0;
+            let actualEndAngle = 0;
+
+            if (padAngle > angle) {
+                actualStartAngle = currentAngle + dir * angle / 2;
+                actualEndAngle = actualStartAngle;
+            }
+            else {
+                actualStartAngle = currentAngle + halfPadAngle;
+                actualEndAngle = endAngle - halfPadAngle;
+            }
+
             data.setItemLayout(idx, {
                 angle: angle,
-                startAngle: currentAngle,
-                endAngle: endAngle,
+                startAngle: actualStartAngle,
+                endAngle: actualEndAngle,
                 clockwise: clockwise,
                 cx: cx,
                 cy: cy,
@@ -147,19 +164,32 @@ export default function pieLayout(
             currentAngle = endAngle;
         });
 
-        // Some sector is constrained by minAngle
+        // Some sector is constrained by minAngle and padAngle
         // Rest sectors needs recalculate angle
         if (restAngle < PI2 && validDataCount) {
             // Average the angle if rest angle is not enough after all angles is
-            // Constrained by minAngle
+            // Constrained by minAngle and padAngle
             if (restAngle <= 1e-3) {
-                const angle = PI2 / validDataCount;
+                const angle = angleRange / validDataCount;
                 data.each(valueDim, function (value: number, idx: number) {
                     if (!isNaN(value)) {
                         const layout = data.getItemLayout(idx);
                         layout.angle = angle;
-                        layout.startAngle = startAngle + dir * idx * angle;
-                        layout.endAngle = startAngle + dir * (idx + 1) * angle;
+
+                        let actualStartAngle = 0;
+                        let actualEndAngle = 0;
+
+                        if (angle < padAngle) {
+                            actualStartAngle = startAngle + dir * (idx + 1 / 2) * angle;
+                            actualEndAngle = actualStartAngle;
+                        }
+                        else {
+                            actualStartAngle = startAngle + dir * idx * angle + halfPadAngle;
+                            actualEndAngle = startAngle + dir * (idx + 1) * angle - halfPadAngle;
+                        }
+
+                        layout.startAngle = actualStartAngle;
+                        layout.endAngle = actualEndAngle;
                     }
                 });
             }
@@ -169,10 +199,23 @@ export default function pieLayout(
                 data.each(valueDim, function (value: number, idx: number) {
                     if (!isNaN(value)) {
                         const layout = data.getItemLayout(idx);
-                        const angle = layout.angle === minAngle
-                            ? minAngle : value * unitRadian;
-                        layout.startAngle = currentAngle;
-                        layout.endAngle = currentAngle + dir * angle;
+                        const angle = layout.angle === minAndPadAngle
+                            ? minAndPadAngle : value * unitRadian;
+
+                        let actualStartAngle = 0;
+                        let actualEndAngle = 0;
+
+                        if (angle < padAngle) {
+                            actualStartAngle = currentAngle + dir * angle / 2;
+                            actualEndAngle = actualStartAngle;
+                        }
+                        else {
+                            actualStartAngle = currentAngle + halfPadAngle;
+                            actualEndAngle = currentAngle + dir * angle - halfPadAngle;
+                        }
+
+                        layout.startAngle = actualStartAngle;
+                        layout.endAngle = actualEndAngle;
                         currentAngle += dir * angle;
                     }
                 });
@@ -180,3 +223,13 @@ export default function pieLayout(
         }
     });
 }
+
+export const getSeriesLayoutData = makeInner<{
+    startAngle: number
+    endAngle: number
+    clockwise: boolean
+    cx: number
+    cy: number
+    r: number
+    r0: number
+}, PieSeriesModel>();

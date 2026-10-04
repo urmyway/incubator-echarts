@@ -18,7 +18,7 @@
 */
 
 import SeriesModel from '../../model/Series';
-import createListFromArray from '../helper/createListFromArray';
+import createSeriesData from '../helper/createSeriesData';
 import CoordinateSystem from '../../core/CoordinateSystem';
 import {
     SeriesOption,
@@ -29,31 +29,49 @@ import {
     OptionDataValue,
     StatesOptionMixin,
     SeriesEncodeOptionMixin,
-    SeriesOnCalendarOptionMixin
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin,
+    DefaultStatesMixinEmphasis,
+    CallbackDataParams
 } from '../../util/types';
 import GlobalModel from '../../model/Global';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import type Geo from '../../coord/geo/Geo';
 import type Cartesian2D from '../../coord/cartesian/Cartesian2D';
 import type Calendar from '../../coord/calendar/Calendar';
+import Matrix from '../../coord/matrix/Matrix';
+import tokens from '../../visual/tokens';
 
 type HeatmapDataValue = OptionDataValue[];
 
-export interface HeatmapStateOption {
+export interface HeatmapStateOption<TCbParams = never> {
     // Available on cartesian2d coordinate system
-    itemStyle?: ItemStyleOption
+    itemStyle?: ItemStyleOption<TCbParams> & {
+        borderRadius?: number | number[]
+    }
     label?: SeriesLabelOption
 }
 
-export interface HeatmapDataItemOption extends HeatmapStateOption, StatesOptionMixin<HeatmapStateOption> {
+interface HeatmapStatesMixin {
+    emphasis?: DefaultStatesMixinEmphasis
+}
+export interface HeatmapDataItemOption extends HeatmapStateOption,
+    StatesOptionMixin<HeatmapStateOption, HeatmapStatesMixin> {
     value: HeatmapDataValue
 }
 
-export interface HeatmapSeriesOption extends SeriesOption<HeatmapStateOption>, HeatmapStateOption,
-    SeriesOnCartesianOptionMixin, SeriesOnGeoOptionMixin, SeriesOnCalendarOptionMixin, SeriesEncodeOptionMixin {
+export interface HeatmapSeriesOption
+    extends SeriesOption<HeatmapStateOption<CallbackDataParams>, HeatmapStatesMixin>,
+    HeatmapStateOption<CallbackDataParams>,
+    SeriesOnCartesianOptionMixin,
+    SeriesOnGeoOptionMixin,
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin,
+    SeriesEncodeOptionMixin {
+
     type?: 'heatmap'
 
-    coordinateSystem?: 'cartesian2d' | 'geo' | 'calendar'
+    coordinateSystem?: 'cartesian2d' | 'geo' | 'calendar' | 'matrix'
 
     // Available on geo coordinate system
     blurSize?: number
@@ -64,16 +82,17 @@ export interface HeatmapSeriesOption extends SeriesOption<HeatmapStateOption>, H
     data?: (HeatmapDataItemOption | HeatmapDataValue)[]
 }
 
+
+
 class HeatmapSeriesModel extends SeriesModel<HeatmapSeriesOption> {
     static readonly type = 'series.heatmap';
     readonly type = HeatmapSeriesModel.type;
 
-    static readonly dependencies = ['grid', 'geo', 'calendar'];
-    // @ts-ignore
-    coordinateSystem: Cartesian2D | Geo | Calendar;
+    static readonly dependencies = ['grid', 'geo', 'calendar', 'matrix'];
+    coordinateSystem: Cartesian2D | Geo | Calendar | Matrix;
 
-    getInitialData(option: HeatmapSeriesOption, ecModel: GlobalModel): List {
-        return createListFromArray(this.getSource(), this, {
+    getInitialData(option: HeatmapSeriesOption, ecModel: GlobalModel): SeriesData {
+        return createSeriesData(null, this, {
             generateCoord: 'value'
         });
     }
@@ -89,7 +108,7 @@ class HeatmapSeriesModel extends SeriesModel<HeatmapSeriesOption> {
 
         coordinateSystem: 'cartesian2d',
 
-        zlevel: 0,
+        // zlevel: 0,
 
         z: 2,
 
@@ -110,7 +129,7 @@ class HeatmapSeriesModel extends SeriesModel<HeatmapSeriesOption> {
 
         select: {
             itemStyle: {
-                borderColor: '#212121'
+                borderColor: tokens.color.primary
             }
         }
     };

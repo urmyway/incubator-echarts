@@ -44,10 +44,10 @@ text {
 
 <svg width="960" height="960"><g transform="translate(1,1)"></g></svg>
 <script src="https://d3js.org/d3.v4.min.js"></script>
-<script src="../dist/echarts.js"></script>
-<script src="./lib/config.js"></script>
+<script src="lib/simpleRequire.js"></script>
+<script src="lib/config.js"></script>
 <script>
-
+require(['echarts'], function (echarts) {
 var stratify = d3.stratify()
     .parentId(function(d) {
         return d.id.substring(0, d.id.lastIndexOf("."));
@@ -131,18 +131,6 @@ d3.csv("data/flare.csv", function(error, rawData) {
     }
 
     var option = {
-        xAxis: {
-            axisLine: {show: false},
-            axisTick: {show: false},
-            axisLabel: {show: false},
-            splitLine: {show: false}
-        },
-        yAxis: {
-            axisLine: {show: false},
-            axisTick: {show: false},
-            axisLabel: {show: false},
-            splitLine: {show: false}
-        },
         tooltip: {},
         visualMap: {
             show: false,
@@ -156,6 +144,7 @@ d3.csv("data/flare.csv", function(error, rawData) {
         series: {
             type: 'custom',
             renderItem: renderItem,
+            coordinateSystem: null,
             encode: {
                 tooltip: 0,
                 itemName: 2
@@ -168,4 +157,5 @@ d3.csv("data/flare.csv", function(error, rawData) {
 
 });
 
+});
 </script>

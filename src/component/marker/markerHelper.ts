@@ -20,19 +20,28 @@
 import * as numberUtil from '../../util/number';
 import {isDimensionStacked} from '../../data/helper/dataStackHelper';
 import SeriesModel from '../../model/Series';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import { MarkerStatisticType, MarkerPositionOption } from './MarkerModel';
 import { indexOf, curry, clone, isArray } from 'zrender/src/core/util';
 import Axis from '../../coord/Axis';
 import { CoordinateSystem } from '../../coord/CoordinateSystem';
-import { ScaleDataValue, ParsedValue } from '../../util/types';
+import { ScaleDataValue, ParsedValue, DimensionLoose, DimensionName } from '../../util/types';
+import { parseDataValue } from '../../data/helper/dataValueHelper';
+import SeriesDimensionDefine from '../../data/SeriesDimensionDefine';
 
 interface MarkerAxisInfo {
-    valueDataDim: string
+    valueDataDim: DimensionName
     valueAxis: Axis
     baseAxis: Axis
-    baseDataDim: string
+    baseDataDim: DimensionName
 }
+
+export type MarkerDimValueGetter<TMarkerItemOption> = (
+    item: TMarkerItemOption,
+    dimName: string,
+    dataIndex: number,
+    dimIndex: number
+) => ParsedValue;
 
 function hasXOrY(item: MarkerPositionOption) {
     return !(isNaN(parseFloat(item.x as string)) && isNaN(parseFloat(item.y as string)));
@@ -42,33 +51,10 @@ function hasXAndY(item: MarkerPositionOption) {
     return !isNaN(parseFloat(item.x as string)) && !isNaN(parseFloat(item.y as string));
 }
 
-// Make it simple, do not visit all stacked value to count precision.
-// function getPrecision(data, valueAxisDim, dataIndex) {
-//     let precision = -1;
-//     let stackedDim = data.mapDimension(valueAxisDim);
-//     do {
-//         precision = Math.max(
-//             numberUtil.getPrecision(data.get(stackedDim, dataIndex)),
-//             precision
-//         );
-//         let stackedOnSeries = data.getCalculationInfo('stackedOnSeries');
-//         if (stackedOnSeries) {
-//             let byValue = data.get(data.getCalculationInfo('stackedByDimension'), dataIndex);
-//             data = stackedOnSeries.getData();
-//             dataIndex = data.indexOf(data.getCalculationInfo('stackedByDimension'), byValue);
-//             stackedDim = data.getCalculationInfo('stackedDimension');
-//         }
-//         else {
-//             data = null;
-//         }
-//     } while (data);
-
-//     return precision;
-// }
-
 function markerTypeCalculatorWithExtent(
     markerType: MarkerStatisticType,
-    data: List,
+    data: SeriesData,
+    axisDim: string,
     otherDataDim: string,
     targetDataDim: string,
     otherCoordIndex: number,
@@ -76,14 +62,20 @@ function markerTypeCalculatorWithExtent(
 ): [ParsedValue[], ParsedValue] {
     const coordArr: ParsedValue[] = [];
 
-    const stacked = isDimensionStacked(data, targetDataDim /*, otherDataDim*/);
+    const stacked = isDimensionStacked(data, targetDataDim /* , otherDataDim */);
     const calcDataDim = stacked
         ? data.getCalculationInfo('stackResultDimension')
         : targetDataDim;
 
     const value = numCalculate(data, calcDataDim, markerType);
 
-    const dataIndex = data.indicesOfNearest(calcDataDim, value)[0];
+    const seriesModel = data.hostModel as SeriesModel;
+    const dataIndex = seriesModel.indicesOfNearest(
+        axisDim,
+        calcDataDim,
+        value
+    )[0];
+
     coordArr[otherCoordIndex] = data.get(otherDataDim, dataIndex);
     coordArr[targetCoordIndex] = data.get(calcDataDim, dataIndex);
     const coordArrValue = data.get(targetDataDim, dataIndex);
@@ -109,25 +101,25 @@ const markerTypeCalculator = {
  * Transform markPoint data item to format used in List by do the following
  * 1. Calculate statistic like `max`, `min`, `average`
  * 2. Convert `item.xAxis`, `item.yAxis` to `item.coord` array
- * @param  {module:echarts/model/Series} seriesModel
- * @param  {module:echarts/coord/*} [coordSys]
- * @param  {Object} item
- * @return {Object}
  */
 export function dataTransform(
     seriesModel: SeriesModel,
     item: MarkerPositionOption
 ) {
+    if (!item) {
+        return;
+    }
+
     const data = seriesModel.getData();
     const coordSys = seriesModel.coordinateSystem;
+    const dims = coordSys && coordSys.dimensions;
 
     // 1. If not specify the position with pixel directly
     // 2. If `coord` is not a data array. Which uses `xAxis`,
     // `yAxis` to specify the coord on each dimension
 
     // parseFloat first because item.x and item.y can be percent string like '20%'
-    if (item && !hasXAndY(item) && !isArray(item.coord) && coordSys) {
-        const dims = coordSys.dimensions;
+    if (!hasXAndY(item) && !isArray(item.coord) && isArray(dims)) {
         const axisInfo = getAxisInfo(item, data, coordSys, seriesModel);
 
         // Clone the option
@@ -142,28 +134,40 @@ export function dataTransform(
             const targetCoordIndex = indexOf(dims, axisInfo.valueAxis.dim);
 
             const coordInfo = markerTypeCalculator[item.type](
-                data, axisInfo.baseDataDim, axisInfo.valueDataDim,
+                data, axisInfo.valueAxis.dim, axisInfo.baseDataDim, axisInfo.valueDataDim,
                 otherCoordIndex, targetCoordIndex
             );
             item.coord = coordInfo[0];
             // Force to use the value of calculated value.
             // let item use the value without stack.
             item.value = coordInfo[1];
-
         }
         else {
             // FIXME Only has one of xAxis and yAxis.
-            const coord = [
+            item.coord = [
                 item.xAxis != null ? item.xAxis : item.radiusAxis,
                 item.yAxis != null ? item.yAxis : item.angleAxis
             ];
-            // Each coord support max, min, average
-            for (let i = 0; i < 2; i++) {
-                if (markerTypeCalculator[coord[i] as MarkerStatisticType]) {
-                    coord[i] = numCalculate(data, data.mapDimension(dims[i]), coord[i] as MarkerStatisticType);
-                }
+        }
+    }
+    // x y is provided
+    if (item.coord == null || !isArray(dims)) {
+        item.coord = [];
+        const baseAxis = seriesModel.getBaseAxis();
+        if (baseAxis && item.type && markerTypeCalculator[item.type]) {
+            const otherAxis = coordSys.getOtherAxis(baseAxis);
+            if (otherAxis) {
+                item.value = numCalculate(data, data.mapDimension(otherAxis.dim), item.type);
             }
-            item.coord = coord;
+        }
+    }
+    else {
+        // Each coord support max, min, average
+        const coord = item.coord;
+        for (let i = 0; i < 2; i++) {
+            if (markerTypeCalculator[coord[i] as MarkerStatisticType]) {
+                coord[i] = numCalculate(data, data.mapDimension(dims[i]), coord[i] as MarkerStatisticType);
+            }
         }
     }
     return item;
@@ -171,7 +175,7 @@ export function dataTransform(
 
 export function getAxisInfo(
     item: MarkerPositionOption,
-    data: List,
+    data: SeriesData,
     coordSys: CoordinateSystem,
     seriesModel: SeriesModel
 ) {
@@ -194,16 +198,9 @@ export function getAxisInfo(
     return ret;
 }
 
-function dataDimToCoordDim(seriesModel: SeriesModel, dataDim: string) {
-    const data = seriesModel.getData();
-    const dimensions = data.dimensions;
-    dataDim = data.getDimension(dataDim);
-    for (let i = 0; i < dimensions.length; i++) {
-        const dimItem = data.getDimensionInfo(dimensions[i]);
-        if (dimItem.name === dataDim) {
-            return dimItem.coordDim;
-        }
-    }
+function dataDimToCoordDim(seriesModel: SeriesModel, dataDim: DimensionLoose): DimensionName {
+    const dimItem = seriesModel.getData().getDimensionInfo(dataDim);
+    return dimItem && dimItem.coordDim;
 }
 
 /**
@@ -217,26 +214,43 @@ export function dataFilter(
     },
     item: MarkerPositionOption
 ) {
-    // Alwalys return true if there is no coordSys
+    // Always return true if there is no coordSys
     return (coordSys && coordSys.containData && item.coord && !hasXOrY(item))
         ? coordSys.containData(item.coord) : true;
 }
 
-export function dimValueGetter(
-    item: MarkerPositionOption,
-    dimName: string,
-    dataIndex: number,
-    dimIndex: number
+export function zoneFilter(
+    // Currently only polar and cartesian has containData.
+    coordSys: CoordinateSystem & {
+        containZone?(data1: ScaleDataValue[], data2: ScaleDataValue[]): boolean
+    },
+    item1: MarkerPositionOption,
+    item2: MarkerPositionOption
 ) {
-    // x, y, radius, angle
-    if (dimIndex < 2) {
-        return item.coord && item.coord[dimIndex] as ParsedValue;
-    }
-    return item.value;
+    // Always return true if there is no coordSys
+    return (coordSys && coordSys.containZone && item1.coord && item2.coord && !hasXOrY(item1) && !hasXOrY(item2))
+        ? coordSys.containZone(item1.coord, item2.coord) : true;
+}
+
+export function createMarkerDimValueGetter(
+    inCoordSys: boolean,
+    dims: SeriesDimensionDefine[]
+): MarkerDimValueGetter<MarkerPositionOption> {
+    return inCoordSys
+        ? function (item, dimName, dataIndex, dimIndex) {
+            const rawVal = dimIndex < 2
+                // x, y, radius, angle
+                ? (item.coord && item.coord[dimIndex])
+                : item.value;
+            return parseDataValue(rawVal, dims[dimIndex]);
+        }
+        : function (item, dimName, dataIndex, dimIndex) {
+            return parseDataValue(item.value, dims[dimIndex]);
+        };
 }
 
 export function numCalculate(
-    data: List,
+    data: SeriesData,
     valueDataDim: string,
     type: MarkerStatisticType
 ) {

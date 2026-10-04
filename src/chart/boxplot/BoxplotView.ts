@@ -17,22 +17,30 @@
 * under the License.
 */
 
-import * as zrUtil from 'zrender/src/core/util';
 import ChartView from '../../view/Chart';
 import * as graphic from '../../util/graphic';
-import { setStatesStylesFromModel, enableHoverEmphasis } from '../../util/states';
+import { setStatesStylesFromModel, toggleHoverEmphasis } from '../../util/states';
 import Path, { PathProps } from 'zrender/src/graphic/Path';
-import BoxplotSeriesModel, { BoxplotDataItemOption } from './BoxplotSeries';
+import BoxplotSeriesModel, { SERIES_TYPE_BOXPLOT, BoxplotDataItemOption } from './BoxplotSeries';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import { BoxplotItemLayout } from './boxplotLayout';
+import { saveOldStyle } from '../../animation/basicTransition';
+import { resolveNormalBoxClipping } from '../helper/whiskerBoxCommon';
+import {
+    createClipPath, SHAPE_CLIP_KIND_FULLY_CLIPPED, SHAPE_CLIP_KIND_NOT_CLIPPED,
+    SHAPE_CLIP_KIND_PARTIALLY_CLIPPED,
+    updateClipPath
+} from '../helper/createClipPathFromCoordSys';
+import { map } from 'zrender/src/core/util';
+
 
 class BoxplotView extends ChartView {
-    static type = 'boxplot';
-    type = BoxplotView.type;
+    static readonly type = SERIES_TYPE_BOXPLOT;
+    readonly type = SERIES_TYPE_BOXPLOT;
 
-    private _data: List;
+    private _data: SeriesData;
 
     render(seriesModel: BoxplotSeriesModel, ecModel: GlobalModel, api: ExtensionAPI) {
         const data = seriesModel.getData();
@@ -45,13 +53,30 @@ class BoxplotView extends ChartView {
             group.removeAll();
         }
 
-        const constDim = seriesModel.get('layout') === 'horizontal' ? 1 : 0;
+        const constDim = seriesModel.getWhiskerBoxesLayout() === 'horizontal' ? 1 : 0;
+        const needClip = seriesModel.get('clip', true);
+        const coordSys = seriesModel.coordinateSystem;
+        const clipArea = coordSys.getArea && coordSys.getArea();
+        const clipPath = needClip && createClipPath(coordSys, false, seriesModel);
 
         data.diff(oldData)
             .add(function (newIdx) {
                 if (data.hasValue(newIdx)) {
                     const itemLayout = data.getItemLayout(newIdx) as BoxplotItemLayout;
+
+                    const clipKind = needClip
+                        ? resolveNormalBoxClipping(clipArea, itemLayout) : SHAPE_CLIP_KIND_NOT_CLIPPED;
+                    if (clipKind === SHAPE_CLIP_KIND_FULLY_CLIPPED) {
+                        return;
+                    }
+
                     const symbolEl = createNormalBox(itemLayout, data, newIdx, constDim, true);
+                    // One axis tick can corresponds to a group of box items (from different series),
+                    // so it may be visually misleading when a group of items are partially outside
+                    // but no clipping is applied.
+                    // Consider performance of zr Element['clipPath'], only set to partially clipped elements.
+                    updateClipPath(clipKind === SHAPE_CLIP_KIND_PARTIALLY_CLIPPED, symbolEl, clipPath);
+
                     data.setItemGraphicEl(newIdx, symbolEl);
                     group.add(symbolEl);
                 }
@@ -66,12 +91,24 @@ class BoxplotView extends ChartView {
                 }
 
                 const itemLayout = data.getItemLayout(newIdx) as BoxplotItemLayout;
+
+                const clipKind = needClip
+                    ? resolveNormalBoxClipping(clipArea, itemLayout) : SHAPE_CLIP_KIND_NOT_CLIPPED;
+                if (clipKind === SHAPE_CLIP_KIND_FULLY_CLIPPED) {
+                    group.remove(symbolEl);
+                    return;
+                }
+
                 if (!symbolEl) {
                     symbolEl = createNormalBox(itemLayout, data, newIdx, constDim);
                 }
                 else {
+                    saveOldStyle(symbolEl);
                     updateNormalBoxData(itemLayout, symbolEl, data, newIdx);
                 }
+
+                // See `updateClipPath` in `add`.
+                updateClipPath(clipKind === SHAPE_CLIP_KIND_PARTIALLY_CLIPPED, symbolEl, clipPath);
 
                 group.add(symbolEl);
 
@@ -139,7 +176,7 @@ class BoxPath extends Path<BoxPathProps> {
 
 function createNormalBox(
     itemLayout: BoxplotItemLayout,
-    data: List,
+    data: SeriesData,
     dataIndex: number,
     constDim: number,
     isInit?: boolean
@@ -162,7 +199,7 @@ function createNormalBox(
 function updateNormalBoxData(
     itemLayout: BoxplotItemLayout,
     el: BoxPath,
-    data: List,
+    data: SeriesData,
     dataIndex: number,
     isInit?: boolean
 ) {
@@ -182,14 +219,15 @@ function updateNormalBoxData(
     el.z2 = 100;
 
     const itemModel = data.getItemModel<BoxplotDataItemOption>(dataIndex);
+    const emphasisModel = itemModel.getModel('emphasis');
 
     setStatesStylesFromModel(el, itemModel);
 
-    enableHoverEmphasis(el, itemModel.get(['emphasis', 'focus']), itemModel.get(['emphasis', 'blurScope']));
+    toggleHoverEmphasis(el, emphasisModel.get('focus'), emphasisModel.get('blurScope'), emphasisModel.get('disabled'));
 }
 
 function transInit(points: number[][], dim: number, itemLayout: BoxplotItemLayout) {
-    return zrUtil.map(points, function (point) {
+    return map(points, function (point) {
         point = point.slice();
         point[dim] = itemLayout.initBaseline;
         return point;

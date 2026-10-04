@@ -20,12 +20,17 @@
 import * as zrUtil from 'zrender/src/core/util';
 import VisualMapping from '../../visual/VisualMapping';
 import GlobalModel from '../../model/Global';
-import SankeySeriesModel, { SankeyNodeItemOption } from './SankeySeries';
+import SankeySeriesModel, { SankeyEdgeItemOption, SankeyNodeItemOption, SERIES_TYPE_SANKEY } from './SankeySeries';
+import { createSimpleOverallStageHandler } from '../../util/model';
 
-export default function sankeyVisual(ecModel: GlobalModel) {
-    ecModel.eachSeriesByType('sankey', function (seriesModel: SankeySeriesModel) {
+
+export const sankeyVisualStageHandler = createSimpleOverallStageHandler(SERIES_TYPE_SANKEY, sankeyVisual);
+
+function sankeyVisual(ecModel: GlobalModel) {
+    ecModel.eachSeriesByType(SERIES_TYPE_SANKEY, function (seriesModel: SankeySeriesModel) {
         const graph = seriesModel.getGraph();
         const nodes = graph.nodes;
+        const edges = graph.edges;
         if (nodes.length) {
             let minValue = Infinity;
             let maxValue = -Infinity;
@@ -57,6 +62,12 @@ export default function sankeyVisual(ecModel: GlobalModel) {
                     node.setVisual('color', mapValueToColor);
                     node.setVisual('style', {fill: mapValueToColor});
                 }
+            });
+        }
+        if (edges.length) {
+            zrUtil.each(edges, function (edge) {
+                const edgeStyle = edge.getModel<SankeyEdgeItemOption>().get('lineStyle');
+                edge.setVisual('style', edgeStyle);
             });
         }
     });

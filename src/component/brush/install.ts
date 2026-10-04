@@ -21,13 +21,15 @@ import { EChartsExtensionInstallRegisters } from '../../extension';
 import brushPreprocessor from './preprocessor';
 import BrushView from './BrushView';
 import BrushModel, { BrushAreaParam } from './BrushModel';
-import brushVisual from './visualEncoding';
+import { brushVisualStageHandler } from './visualEncoding';
 import { Payload } from '../../util/types';
 import GlobalModel from '../../model/Global';
 
 // TODO
 import BrushFeature from '../toolbox/feature/Brush';
 import { registerFeature } from '../toolbox/featureManager';
+
+import { noop } from 'zrender/src/core/util';
 
 interface BrushPayload extends Payload {
     // If "areas" is empty, all of the select-boxes will be deleted
@@ -41,7 +43,7 @@ export function install(registers: EChartsExtensionInstallRegisters) {
 
     registers.registerPreprocessor(brushPreprocessor);
 
-    registers.registerVisual(registers.PRIORITY.VISUAL.BRUSH, brushVisual);
+    registers.registerVisual(registers.PRIORITY.VISUAL.BRUSH, brushVisualStageHandler);
 
     registers.registerAction(
         {type: 'brush', event: 'brush', update: 'updateVisual' },
@@ -78,12 +80,12 @@ export function install(registers: EChartsExtensionInstallRegisters) {
      */
     registers.registerAction(
         {type: 'brushSelect', event: 'brushSelected', update: 'none'},
-        function () {}
+        noop
     );
 
     registers.registerAction(
         {type: 'brushEnd', event: 'brushEnd', update: 'none'},
-        function () {}
+        noop
     );
 
     registerFeature('brush', BrushFeature);

@@ -18,28 +18,33 @@
 */
 
 import { EChartsExtensionInstallRegisters } from '../../extension';
-import * as zrUtil from 'zrender/src/core/util';
-import {layout, largeLayout} from '../../layout/barGrid';
+import {
+    createCrossSeriesLayoutHandler, createProgressiveLayout, registerBarGridAxisHandlers
+} from '../../layout/barGrid';
 import dataSample from '../../processor/dataSample';
 
 import BarSeries from './BarSeries';
 import BarView from './BarView';
 import CartesianAxisModel from '../../coord/cartesian/AxisModel';
+import { SERIES_TYPE_BAR } from '../../layout/barCommon';
 
 export function install(registers: EChartsExtensionInstallRegisters) {
 
     registers.registerChartView(BarView);
     registers.registerSeriesModel(BarSeries);
 
-    registers.registerLayout(registers.PRIORITY.VISUAL.LAYOUT, zrUtil.curry(layout, 'bar'));
-    // Use higher prority to avoid to be blocked by other overall layout, which do not
-    // only exist in this module, but probably also exist in other modules, like `barPolar`.
-    registers.registerLayout(registers.PRIORITY.VISUAL.PROGRESSIVE_LAYOUT, largeLayout);
+    registers.registerLayout(
+        registers.PRIORITY.VISUAL.LAYOUT, createCrossSeriesLayoutHandler(SERIES_TYPE_BAR)
+    );
+    // Do layout after other overall layout, which can prepare some information.
+    registers.registerLayout(
+        registers.PRIORITY.VISUAL.PROGRESSIVE_LAYOUT, createProgressiveLayout(SERIES_TYPE_BAR)
+    );
 
     // Down sample after filter
     registers.registerProcessor(
         registers.PRIORITY.PROCESSOR.STATISTIC,
-        dataSample('bar')
+        dataSample(SERIES_TYPE_BAR)
     );
 
     /**
@@ -68,4 +73,5 @@ export function install(registers: EChartsExtensionInstallRegisters) {
         );
     });
 
+    registerBarGridAxisHandlers(registers);
 }

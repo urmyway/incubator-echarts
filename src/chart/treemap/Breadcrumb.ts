@@ -25,11 +25,12 @@ import TreemapSeriesModel, { TreemapSeriesNodeItemOption, TreemapSeriesOption } 
 import ExtensionAPI from '../../core/ExtensionAPI';
 import { TreeNode } from '../../data/Tree';
 import { curry, defaults } from 'zrender/src/core/util';
-import { ZRElementEvent, BoxLayoutOptionMixin, ECElement } from '../../util/types';
+import { ZRElementEvent, ECElement } from '../../util/types';
 import Element from 'zrender/src/Element';
 import Model from '../../model/Model';
 import { convertOptionIdName } from '../../util/model';
-import { Z2_EMPHASIS_LIFT } from '../../util/states';
+import { toggleHoverEmphasis, Z2_EMPHASIS_LIFT } from '../../util/states';
+import { createTextStyle } from '../../label/labelStyle';
 
 const TEXT_PADDING = 8;
 const ITEM_GAP = 8;
@@ -40,11 +41,6 @@ interface OnSelectCallback {
 }
 
 interface LayoutParam {
-    pos: BoxLayoutOptionMixin
-    box: {
-        width: number,
-        height: number
-    }
     emptyItemWidth: number
     totalWidth: number
     renderList: {
@@ -55,6 +51,7 @@ interface LayoutParam {
 }
 
 type BreadcrumbItemStyleModel = Model<TreemapSeriesOption['breadcrumb']['itemStyle']>;
+type BreadcrumbEmphasisItemStyleModel = Model<TreemapSeriesOption['breadcrumb']['emphasis']>;
 type BreadcrumbTextStyleModel = Model<TreemapSeriesOption['breadcrumb']['itemStyle']['textStyle']>;
 
 class Breadcrumb {
@@ -81,29 +78,33 @@ class Breadcrumb {
         }
 
         const normalStyleModel = model.getModel('itemStyle');
-        // let emphasisStyleModel = model.getModel('emphasis.itemStyle');
+        const emphasisModel = model.getModel('emphasis');
         const textStyleModel = normalStyleModel.getModel('textStyle');
+        const emphasisTextStyleModel = emphasisModel.getModel(['itemStyle', 'textStyle']);
 
+        const refContainer = layout.createBoxLayoutReference(seriesModel, api).refContainer;
+        const boxLayoutParams = {
+            left: model.get('left'),
+            right: model.get('right'),
+            top: model.get('top'),
+            bottom: model.get('bottom')
+        };
         const layoutParam: LayoutParam = {
-            pos: {
-                left: model.get('left'),
-                right: model.get('right'),
-                top: model.get('top'),
-                bottom: model.get('bottom')
-            },
-            box: {
-                width: api.getWidth(),
-                height: api.getHeight()
-            },
             emptyItemWidth: model.get('emptyItemWidth'),
             totalWidth: 0,
             renderList: []
         };
-
+        const availableSize = layout.getLayoutRect(
+            boxLayoutParams,
+            refContainer,
+        );
         this._prepare(targetNode, layoutParam, textStyleModel);
-        this._renderContent(seriesModel, layoutParam, normalStyleModel, textStyleModel, onSelect);
+        this._renderContent(
+            seriesModel, layoutParam, availableSize, normalStyleModel,
+            emphasisModel, textStyleModel, emphasisTextStyleModel, onSelect
+        );
 
-        layout.positionElement(thisGroup, layoutParam.pos, layoutParam.box);
+        layout.positionElement(thisGroup, boxLayoutParams, refContainer);
     }
 
     /**
@@ -133,17 +134,20 @@ class Breadcrumb {
     _renderContent(
         seriesModel: TreemapSeriesModel,
         layoutParam: LayoutParam,
+        availableSize: {width: number, height: number},
         normalStyleModel: BreadcrumbItemStyleModel,
+        emphasisModel: BreadcrumbEmphasisItemStyleModel,
         textStyleModel: BreadcrumbTextStyleModel,
+        emphasisTextStyleModel: BreadcrumbTextStyleModel,
         onSelect: OnSelectCallback
     ) {
         // Start rendering.
         let lastX = 0;
         const emptyItemWidth = layoutParam.emptyItemWidth;
         const height = seriesModel.get(['breadcrumb', 'height']);
-        const availableSize = layout.getAvailableSize(layoutParam.pos, layoutParam.box);
         let totalWidth = layoutParam.totalWidth;
         const renderList = layoutParam.renderList;
+        const emphasisItemStyle = emphasisModel.getModel('itemStyle').getItemStyle();
 
         for (let i = renderList.length - 1; i >= 0; i--) {
             const item = renderList[i];
@@ -172,11 +176,7 @@ class Breadcrumb {
                     }
                 ),
                 textContent: new graphic.Text({
-                    style: {
-                        text,
-                        fill: textStyleModel.getTextColor(),
-                        font: textStyleModel.getFont()
-                    }
+                    style: createTextStyle(textStyleModel, { text })
                 }),
                 textConfig: {
                     position: 'inside'
@@ -185,7 +185,11 @@ class Breadcrumb {
                 onclick: curry(onSelect, itemNode)
             });
             (el as ECElement).disableLabelAnimation = true;
-
+            el.getTextContent().ensureState('emphasis').style = createTextStyle(emphasisTextStyleModel, { text });
+            el.ensureState('emphasis').style = emphasisItemStyle;
+            toggleHoverEmphasis(
+                el, emphasisModel.get('focus'), emphasisModel.get('blurScope'), emphasisModel.get('disabled')
+            );
             this.group.add(el);
 
             packEventData(el, seriesModel, itemNode);
@@ -217,7 +221,7 @@ function packEventData(el: Element, seriesModel: TreemapSeriesModel, itemNode: T
         componentType: 'series',
         componentSubType: 'treemap',
         componentIndex: seriesModel.componentIndex,
-        seriesIndex: seriesModel.componentIndex,
+        seriesIndex: seriesModel.seriesIndex,
         seriesName: seriesModel.name,
         seriesType: 'treemap',
         selfType: 'breadcrumb', // Distinguish with click event on treemap node.

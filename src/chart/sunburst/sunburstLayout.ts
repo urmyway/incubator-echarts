@@ -21,18 +21,20 @@ import { parsePercent } from '../../util/number';
 import * as zrUtil from 'zrender/src/core/util';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
-import SunburstSeriesModel, { SunburstSeriesNodeItemOption, SunburstSeriesOption } from './SunburstSeries';
+import SunburstSeriesModel, { SERIES_TYPE_SUNBURST, SunburstSeriesOption } from './SunburstSeries';
 import { TreeNode } from '../../data/Tree';
+import { createSimpleOverallStageHandler } from '../../util/model';
 
 // let PI2 = Math.PI * 2;
 const RADIAN = Math.PI / 180;
 
-export default function sunburstLayout(
-    seriesType: 'sunburst',
+export const sunburstLayoutStageHandler = createSimpleOverallStageHandler(SERIES_TYPE_SUNBURST, sunburstLayout);
+
+function sunburstLayout(
     ecModel: GlobalModel,
     api: ExtensionAPI
 ) {
-    ecModel.eachSeriesByType(seriesType, function (seriesModel: SunburstSeriesModel) {
+    ecModel.eachSeriesByType(SERIES_TYPE_SUNBURST, function (seriesModel: SunburstSeriesModel) {
         let center = seriesModel.get('center');
         let radius = seriesModel.get('radius');
 
@@ -119,16 +121,19 @@ export default function sunburstLayout(
                 let rStart = r0 + rPerLevel * depth;
                 let rEnd = r0 + rPerLevel * (depth + 1);
 
-                const itemModel = node.getModel<SunburstSeriesNodeItemOption>();
-                // @ts-ignore. TODO this is not provided to developer yet. Rename it.
-                if (itemModel.get('r0') != null) {
-                    // @ts-ignore
-                    rStart = parsePercent(itemModel.get('r0'), size / 2);
-                }
-                // @ts-ignore
-                if (itemModel.get('r') != null) {
-                    // @ts-ignore
-                    rEnd = parsePercent(itemModel.get('r'), size / 2);
+                const levelModel = seriesModel.getLevelModel(node);
+                if (levelModel) {
+                    let r0 = levelModel.get('r0', true);
+                    let r = levelModel.get('r', true);
+                    const radius = levelModel.get('radius', true);
+
+                    if (radius != null) {
+                        r0 = radius[0];
+                        r = radius[1];
+                    }
+
+                    (r0 != null) && (rStart = parsePercent(r0, size / 2));
+                    (r != null) && (rEnd = parsePercent(r, size / 2));
                 }
 
                 node.setLayout({
@@ -201,7 +206,7 @@ function initChildren(node: TreeNode, sortOrder?: SunburstSeriesOption['sort']) 
  *                                   See SunburstSeries.js for details.
  */
 function sort(children: TreeNode[], sortOrder: SunburstSeriesOption['sort']) {
-    if (typeof sortOrder === 'function') {
+    if (zrUtil.isFunction(sortOrder)) {
         const sortTargets = zrUtil.map(children, (child, idx) => {
             const value = child.getValue() as number;
             return {

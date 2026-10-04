@@ -21,12 +21,12 @@ import {assert, isArray} from 'zrender/src/core/util';
 import SeriesModel from '../model/Series';
 import { Pipeline } from './Scheduler';
 import { Payload } from '../util/types';
-import List from '../data/List';
+import SeriesData from '../data/SeriesData';
 
 
 export interface TaskContext {
-    outputData?: List;
-    data?: List;
+    outputData?: SeriesData;
+    data?: SeriesData;
     payload?: Payload;
     model?: SeriesModel;
 };
@@ -112,7 +112,7 @@ export class Task<Ctx extends TaskContext> {
     // Injected in schedular
     __pipeline: Pipeline;
     __idxInPipeline: number;
-    __block: boolean;
+    __block: boolean; // FIXME: simplify it - merge with PerformStageTaskOpt['block']?
 
     // Context must be specified implicitly, to
     // avoid miss update context when model changed.
@@ -242,6 +242,14 @@ export class Task<Ctx extends TaskContext> {
         return this.unfinished();
     }
 
+    /**
+     * @tutorial [EC_TASK_DIRTY]
+     *  Task `dirty()` calls typically originate from a trigger of EC_FULL_UPDATE_CYCLE and
+     *  EC_PARTIAL_UPDATE_CYCLE) (See comments in EC_CYCLE. Generally, task dirty propagates
+     *  to downstream tasks.
+     *  Task dirty leads to the `StageHandler['reset']` or `StageHandler['overallReset']` call,
+     *  which discards the previous result and starts over the processing.
+     */
     dirty(): void {
         this._dirty = true;
         this._onDirty && this._onDirty(this.context);
@@ -331,11 +339,11 @@ export class Task<Ctx extends TaskContext> {
     }
 
     setOutputEnd(end: number): void {
-        // This only happend in dataTask, dataZoom, map, currently.
+        // This only happens in dataTask, dataZoom, map, currently.
         // where dataZoom do not set end each time, but only set
-        // when reset. So we should record the setted end, in case
+        // when reset. So we should record the set end, in case
         // that the stub of dataZoom perform again and earse the
-        // setted end by upstream.
+        // set end by upstream.
         this._outputDueEnd = this._settedOutputEnd = end;
     }
 
@@ -384,7 +392,7 @@ const iterator: TaskDataIterator = (function () {
 
 
 
-///////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 // For stream debug (Should be commented out after used!)
 // @usage: printTask(this, 'begin');
 // @usage: printTask(this, null, {someExtraProp});

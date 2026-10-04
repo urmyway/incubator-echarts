@@ -19,21 +19,15 @@
 
 import * as layout from '../../util/layout';
 import {parsePercent, linearMap} from '../../util/number';
-import FunnelSeriesModel, { FunnelSeriesOption, FunnelDataItemOption } from './FunnelSeries';
+import FunnelSeriesModel, { FunnelSeriesOption, FunnelDataItemOption, SERIES_TYPE_FUNNEL } from './FunnelSeries';
 import ExtensionAPI from '../../core/ExtensionAPI';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import GlobalModel from '../../model/Global';
+import { indexOf, isFunction, isString } from 'zrender/src/core/util';
+import { createSimpleOverallStageHandler } from '../../util/model';
 
-function getViewRect(seriesModel: FunnelSeriesModel, api: ExtensionAPI) {
-    return layout.getLayoutRect(
-        seriesModel.getBoxLayoutParams(), {
-            width: api.getWidth(),
-            height: api.getHeight()
-        }
-    );
-}
 
-function getSortedIndices(data: List, sort: FunnelSeriesOption['sort']) {
+function getSortedIndices(data: SeriesData, sort: FunnelSeriesOption['sort']) {
     const valueDim = data.mapDimension('value');
     const valueArr = data.mapArray(valueDim, function (val: number) {
         return val;
@@ -45,8 +39,8 @@ function getSortedIndices(data: List, sort: FunnelSeriesOption['sort']) {
     }
 
     // Add custom sortable function & none sortable opetion by "options.sort"
-    if (typeof sort === 'function') {
-        indices.sort(sort);
+    if (isFunction(sort)) {
+        indices.sort(sort as any);
     }
     else if (sort !== 'none') {
         indices.sort(function (a, b) {
@@ -58,9 +52,9 @@ function getSortedIndices(data: List, sort: FunnelSeriesOption['sort']) {
     return indices;
 }
 
-function labelLayout(data: List) {
-    const seriesModel = data.hostModel;
-    const orient = seriesModel.get('orient');
+function labelLayout(data: SeriesData) {
+    const seriesModel = data.hostModel as FunnelSeriesModel;
+    const isHorizontal = isOrientHorizontal(seriesModel);
     data.each(function (idx) {
         const itemModel = data.getItemModel<FunnelDataItemOption>(idx);
         const labelModel = itemModel.getModel('label');
@@ -106,14 +100,22 @@ function labelLayout(data: List) {
             let x2;
             let y2;
             const labelLineLen = labelLineModel.get('length');
-            if (__DEV__) {
-                if (orient === 'vertical' && ['top', 'bottom'].indexOf(labelPosition as string) > -1) {
+            if (isString(labelPosition)) {
+                if (!isHorizontal && indexOf(['top', 'bottom'], labelPosition) > -1) {
                     labelPosition = 'left';
-                    console.warn('Position error: Funnel chart on vertical orient dose not support top and bottom.');
+                    if (__DEV__) {
+                        console.warn(
+                            'Position error: Funnel chart on vertical orient dose not support top and bottom.'
+                        );
+                    }
                 }
-                if (orient === 'horizontal' && ['left', 'right'].indexOf(labelPosition as string) > -1) {
+                if (isHorizontal && indexOf(['left', 'right'], labelPosition as string) > -1) {
                     labelPosition = 'bottom';
-                    console.warn('Position error: Funnel chart on horizontal orient dose not support left and right.');
+                    if (__DEV__) {
+                        console.warn(
+                            'Position error: Funnel chart on horizontal orient dose not support left and right.'
+                        );
+                    }
                 }
             }
             if (labelPosition === 'left') {
@@ -150,9 +152,9 @@ function labelLayout(data: List) {
             }
             else if (labelPosition === 'rightTop') {
                 // RightTop side
-                x1 = orient === 'horizontal' ? points[3][0] : points[1][0];
-                y1 = orient === 'horizontal' ? points[3][1] : points[1][1];
-                if (orient === 'horizontal') {
+                x1 = isHorizontal ? points[3][0] : points[1][0];
+                y1 = isHorizontal ? points[3][1] : points[1][1];
+                if (isHorizontal) {
                     y2 = y1 - labelLineLen;
                     textY = y2 - 5;
                     textAlign = 'center';
@@ -167,7 +169,7 @@ function labelLayout(data: List) {
                 // RightBottom side
                 x1 = points[2][0];
                 y1 = points[2][1];
-                if (orient === 'horizontal') {
+                if (isHorizontal) {
                     y2 = y1 + labelLineLen;
                     textY = y2 + 5;
                     textAlign = 'center';
@@ -181,8 +183,8 @@ function labelLayout(data: List) {
             else if (labelPosition === 'leftTop') {
                 // LeftTop side
                 x1 = points[0][0];
-                y1 = orient === 'horizontal' ? points[0][1] : points[1][1];
-                if (orient === 'horizontal') {
+                y1 = isHorizontal ? points[0][1] : points[1][1];
+                if (isHorizontal) {
                     y2 = y1 - labelLineLen;
                     textY = y2 - 5;
                     textAlign = 'center';
@@ -195,9 +197,9 @@ function labelLayout(data: List) {
             }
             else if (labelPosition === 'leftBottom') {
                 // LeftBottom side
-                x1 = orient === 'horizontal' ? points[1][0] : points[3][0];
-                y1 = orient === 'horizontal' ? points[1][1] : points[2][1];
-                if (orient === 'horizontal') {
+                x1 = isHorizontal ? points[1][0] : points[3][0];
+                y1 = isHorizontal ? points[1][1] : points[2][1];
+                if (isHorizontal) {
                     y2 = y1 + labelLineLen;
                     textY = y2 + 5;
                     textAlign = 'center';
@@ -212,7 +214,7 @@ function labelLayout(data: List) {
                 // Right side or Bottom side
                 x1 = (points[1][0] + points[2][0]) / 2;
                 y1 = (points[1][1] + points[2][1]) / 2;
-                if (orient === 'horizontal') {
+                if (isHorizontal) {
                     y2 = y1 + labelLineLen;
                     textY = y2 + 5;
                     textAlign = 'center';
@@ -223,7 +225,7 @@ function labelLayout(data: List) {
                     textAlign = 'left';
                 }
             }
-            if (orient === 'horizontal') {
+            if (isHorizontal) {
                 x2 = x1;
                 textX = x2;
             }
@@ -245,20 +247,25 @@ function labelLayout(data: List) {
     });
 }
 
-export default function funnelLayout(ecModel: GlobalModel, api: ExtensionAPI) {
-    ecModel.eachSeriesByType('funnel', function (seriesModel: FunnelSeriesModel) {
+export const funnelLayoutStageHandler = createSimpleOverallStageHandler(SERIES_TYPE_FUNNEL, funnelLayout);
+
+function funnelLayout(ecModel: GlobalModel, api: ExtensionAPI) {
+    ecModel.eachSeriesByType(SERIES_TYPE_FUNNEL, function (seriesModel: FunnelSeriesModel) {
         const data = seriesModel.getData();
         const valueDim = data.mapDimension('value');
         const sort = seriesModel.get('sort');
-        const viewRect = getViewRect(seriesModel, api);
-        const orient = seriesModel.get('orient');
+
+        const layoutRef = layout.createBoxLayoutReference(seriesModel, api);
+        const viewRect = layout.getLayoutRect(seriesModel.getBoxLayoutParams(), layoutRef.refContainer);
+
+        const isHorizontal = isOrientHorizontal(seriesModel);
         const viewWidth = viewRect.width;
         const viewHeight = viewRect.height;
         let indices = getSortedIndices(data, sort);
         let x = viewRect.x;
         let y = viewRect.y;
 
-        const sizeExtent = orient === 'horizontal' ? [
+        const sizeExtent = isHorizontal ? [
             parsePercent(seriesModel.get('minSize'), viewHeight),
             parsePercent(seriesModel.get('maxSize'), viewHeight)
         ] : [
@@ -277,12 +284,12 @@ export default function funnelLayout(ecModel: GlobalModel, api: ExtensionAPI) {
 
         const funnelAlign = seriesModel.get('funnelAlign');
         let gap = seriesModel.get('gap');
-        const viewSize = orient === 'horizontal' ? viewWidth : viewHeight;
+        const viewSize = isHorizontal ? viewWidth : viewHeight;
         let itemSize = (viewSize - gap * (data.count() - 1)) / data.count();
 
         const getLinePoints = function (idx: number, offset: number) {
             // End point index is data.count() and we assign it 0
-            if (orient === 'horizontal') {
+            if (isHorizontal) {
                 const val = data.get(valueDim, idx) as number || 0;
                 const itemHeight = linearMap(val, [min, max], sizeExtent, true);
                 let y0;
@@ -327,7 +334,7 @@ export default function funnelLayout(ecModel: GlobalModel, api: ExtensionAPI) {
             // From bottom to top
             itemSize = -itemSize;
             gap = -gap;
-            if (orient === 'horizontal') {
+            if (isHorizontal) {
                 x += viewWidth;
             }
             else {
@@ -341,7 +348,7 @@ export default function funnelLayout(ecModel: GlobalModel, api: ExtensionAPI) {
             const nextIdx = indices[i + 1];
             const itemModel = data.getItemModel<FunnelDataItemOption>(idx);
 
-            if (orient === 'horizontal') {
+            if (isHorizontal) {
                 let width = itemModel.get(['itemStyle', 'width']);
                 if (width == null) {
                     width = itemSize;
@@ -387,4 +394,8 @@ export default function funnelLayout(ecModel: GlobalModel, api: ExtensionAPI) {
 
         labelLayout(data);
     });
+}
+
+function isOrientHorizontal(seriesModel: FunnelSeriesModel): boolean {
+    return seriesModel.get('orient') === 'horizontal';
 }

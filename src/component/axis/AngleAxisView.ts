@@ -29,7 +29,8 @@ import Polar from '../../coord/polar/Polar';
 import AngleAxis from '../../coord/polar/AngleAxis';
 import { ZRTextAlign, ZRTextVerticalAlign, ColorString } from '../../util/types';
 import { getECData } from '../../util/innerStore';
-import OrdinalScale from '../../scale/Ordinal';
+import { AxisLabelBaseOptionNuance } from '../../coord/axisCommonTypes';
+import { getTickValueOutermost } from '../../coord/axisHelper';
 
 const elementList = [
     'axisLine',
@@ -71,7 +72,7 @@ function fixAngleOverlap(list: TickCoord[]) {
     }
 }
 
-type TickCoord = ReturnType<AngleAxis['getTicksCoords']>[number];
+type TickCoord = Pick<ReturnType<AngleAxis['getTicksCoords']>[number], 'coord'>;
 type TickLabel = ReturnType<AngleAxis['getViewLabels']>[number] & {
     coord: number
 };
@@ -93,17 +94,18 @@ class AngleAxisView extends AxisView {
         const polar = angleAxis.polar;
         const radiusExtent = polar.getRadiusAxis().getExtent();
 
-        const ticksAngles = angleAxis.getTicksCoords();
+        const ticksAngles = angleAxis.getTicksCoords({breakTicks: 'none'});
         const minorTickAngles = angleAxis.getMinorTicksCoords();
 
-        const labels = zrUtil.map(angleAxis.getViewLabels(), function (labelItem: TickLabel) {
+        const labels: TickLabel[] = [];
+        zrUtil.each(angleAxis.getViewLabels(), function (labelItem: TickLabel) {
+            if (labelItem.tick.offInterval) {
+                return;
+            }
             labelItem = zrUtil.clone(labelItem);
             const scale = angleAxis.scale;
-            const tickValue = scale.type === 'ordinal'
-                ? (scale as OrdinalScale).getRawOrdinalNumber(labelItem.tickValue)
-                : labelItem.tickValue;
-            labelItem.coord = angleAxis.dataToCoord(tickValue);
-            return labelItem;
+            labelItem.coord = angleAxis.dataToCoord(getTickValueOutermost(scale, labelItem.tick));
+            labels.push(labelItem);
         });
 
         fixAngleOverlap(labels);
@@ -138,18 +140,25 @@ const angelAxisElementsBuilders: Record<typeof elementList[number], AngleAxisEle
 
     axisLine(group, angleAxisModel, polar, ticksAngles, minorTickAngles, radiusExtent) {
         const lineStyleModel = angleAxisModel.getModel(['axisLine', 'lineStyle']);
+        const angleAxis = polar.getAngleAxis();
+        const RADIAN = Math.PI / 180;
+        const angleExtent = angleAxis.getExtent();
 
         // extent id of the axis radius (r0 and r)
         const rId = getRadiusIdx(polar);
         const r0Id = rId ? 0 : 1;
-
         let shape;
+        const shapeType = Math.abs(angleExtent[1] - angleExtent[0]) === 360 ? 'Circle' : 'Arc';
+
         if (radiusExtent[r0Id] === 0) {
-            shape = new graphic.Circle({
+            shape = new graphic[shapeType]({
                 shape: {
                     cx: polar.cx,
                     cy: polar.cy,
-                    r: radiusExtent[rId]
+                    r: radiusExtent[rId],
+                    startAngle: -angleExtent[0] * RADIAN,
+                    endAngle: -angleExtent[1] * RADIAN,
+                    clockwise: angleAxis.inverse
                 },
                 style: lineStyleModel.getLineStyle(),
                 z2: 1,
@@ -242,7 +251,7 @@ const angelAxisElementsBuilders: Record<typeof elementList[number], AngleAxisEle
         // Use length of ticksAngles because it may remove the last tick to avoid overlapping
         zrUtil.each(labels, function (labelItem, idx) {
             let labelModel = commonLabelModel;
-            const tickValue = labelItem.tickValue;
+            const tickValue = labelItem.tick.value;
 
             const r = radiusExtent[getRadiusIdx(polar)];
             const p = polar.coordToPoint([r + labelMargin, labelItem.coord]);
@@ -260,12 +269,12 @@ const angelAxisElementsBuilders: Record<typeof elementList[number], AngleAxisEle
                     labelModel = new Model(
                         rawCategoryItem.textStyle, commonLabelModel, commonLabelModel.ecModel
                     );
-                    }
+                }
             }
 
             const textEl = new graphic.Text({
                 silent: AxisBuilder.isLabelSilent(angleAxisModel),
-                style: createTextStyle(labelModel, {
+                style: createTextStyle<AxisLabelBaseOptionNuance>(labelModel, {
                     x: p[0],
                     y: p[1],
                     fill: labelModel.getTextColor()
@@ -276,6 +285,17 @@ const angelAxisElementsBuilders: Record<typeof elementList[number], AngleAxisEle
                 })
             });
             group.add(textEl);
+
+            graphic.setTooltipConfig({
+                el: textEl,
+                componentModel: angleAxisModel,
+                itemName: labelItem.formattedLabel,
+                formatterParamsExtra: {
+                    isTruncated: () => textEl.isTruncated,
+                    value: labelItem.rawLabel,
+                    tickIndex: idx
+                }
+            });
 
             // Pack data for mouse event
             if (triggerEvent) {

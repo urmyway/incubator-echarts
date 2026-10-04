@@ -26,14 +26,24 @@ import {
     ComponentOption,
     CircleLayoutOptionMixin,
     LabelOption,
-    ColorString
+    ColorString,
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin
 } from '../../util/types';
-import { AxisBaseOption } from '../axisCommonTypes';
+import { AxisBaseOption, CategoryAxisBaseOption, ValueAxisBaseOption } from '../axisCommonTypes';
 import { AxisBaseModel } from '../AxisBaseModel';
-import Radar from './Radar';
+import type Radar from './Radar';
 import {CoordinateSystemHostModel} from '../../coord/CoordinateSystem';
+import tokens from '../../visual/tokens';
+import { getUID } from '../../util/component';
 
 const valueAxisDefault = axisDefault.value;
+
+export const COORD_SYS_TYPE_RADAR = 'radar';
+export const COMPONENT_TYPE_RADAR = COORD_SYS_TYPE_RADAR;
+export const SERIES_TYPE_RADAR = COORD_SYS_TYPE_RADAR;
+
+export const RADAR_DEFAULT_SPLIT_NUMBER = 5;
 
 function defaultsShow(opt: object, show: boolean) {
     return zrUtil.defaults({
@@ -42,6 +52,10 @@ function defaultsShow(opt: object, show: boolean) {
 }
 
 export interface RadarIndicatorOption {
+    name?: string
+    /**
+     * @deprecated Use `name` instead.
+     */
     text?: string
     min?: number
     max?: number
@@ -50,10 +64,15 @@ export interface RadarIndicatorOption {
     axisType?: 'value' | 'log'
 }
 
-export interface RadarOption extends ComponentOption, CircleLayoutOptionMixin {
+export interface RadarOption extends
+    ComponentOption, CircleLayoutOptionMixin,
+    ComponentOnCalendarOptionMixin, ComponentOnMatrixOptionMixin {
+
     mainType?: 'radar'
 
     startAngle?: number
+
+    clockwise?: boolean
 
     shape?: 'polygon' | 'circle'
 
@@ -78,18 +97,20 @@ export interface RadarOption extends ComponentOption, CircleLayoutOptionMixin {
     scale?: boolean
     splitNumber?: number
 
-    boundaryGap?: AxisBaseOption['boundaryGap']
+    boundaryGap?: CategoryAxisBaseOption['boundaryGap']
+        | ValueAxisBaseOption['boundaryGap']
 
     indicator?: RadarIndicatorOption[]
 }
 
-export interface InnerIndicatorAxisOption extends AxisBaseOption {
+export type InnerIndicatorAxisOption = AxisBaseOption & {
     // TODO Use type?
     // axisType?: 'value' | 'log'
-}
+    showName?: boolean
+};
 
 class RadarModel extends ComponentModel<RadarOption> implements CoordinateSystemHostModel {
-    static readonly type = 'radar';
+    static readonly type = COMPONENT_TYPE_RADAR;
     readonly type = RadarModel.type;
 
     coordinateSystem: Radar;
@@ -99,6 +120,7 @@ class RadarModel extends ComponentModel<RadarOption> implements CoordinateSystem
     optionUpdated() {
         const boundaryGap = this.get('boundaryGap');
         const splitNumber = this.get('splitNumber');
+        const clockwise = this.get('clockwise');
         const scale = this.get('scale');
         const axisLine = this.get('axisLine');
         const axisTick = this.get('axisTick');
@@ -128,6 +150,7 @@ class RadarModel extends ComponentModel<RadarOption> implements CoordinateSystem
             const innerIndicatorOpt: InnerIndicatorAxisOption = zrUtil.merge(zrUtil.clone(indicatorOpt), {
                 boundaryGap: boundaryGap,
                 splitNumber: splitNumber,
+                clockwise: clockwise,
                 scale: scale,
                 axisLine: axisLine,
                 axisTick: axisTick,
@@ -135,20 +158,18 @@ class RadarModel extends ComponentModel<RadarOption> implements CoordinateSystem
                 axisLabel: axisLabel,
                 // Compatible with 2 and use text
                 name: indicatorOpt.text,
+                showName: showName,
                 nameLocation: 'end',
                 nameGap: nameGap,
                 // min: 0,
                 nameTextStyle: iNameTextStyle,
                 triggerEvent: triggerEvent
             } as InnerIndicatorAxisOption, false);
-            if (!showName) {
-                innerIndicatorOpt.name = '';
-            }
-            if (typeof nameFormatter === 'string') {
+            if (zrUtil.isString(nameFormatter)) {
                 const indName = innerIndicatorOpt.name;
                 innerIndicatorOpt.name = nameFormatter.replace('{value}', indName != null ? indName : '');
             }
-            else if (typeof nameFormatter === 'function') {
+            else if (zrUtil.isFunction(nameFormatter)) {
                 innerIndicatorOpt.name = nameFormatter(
                     innerIndicatorOpt.name, innerIndicatorOpt
                 );
@@ -159,6 +180,9 @@ class RadarModel extends ComponentModel<RadarOption> implements CoordinateSystem
             // For triggerEvent.
             model.mainType = 'radar';
             model.componentIndex = this.componentIndex;
+            // FIXME: construct an AxisBaseModel directly, rather than mixin.
+            // @ts-ignore
+            model.uid = getUID('ec_radar');
 
             return model;
         }, this);
@@ -172,25 +196,28 @@ class RadarModel extends ComponentModel<RadarOption> implements CoordinateSystem
 
     static defaultOption: RadarOption = {
 
-        zlevel: 0,
+        // zlevel: 0,
 
         z: 0,
 
         center: ['50%', '50%'],
 
-        radius: '75%',
+        radius: '50%',
 
         startAngle: 90,
 
+        clockwise: false,
+
         axisName: {
-            show: true
+            show: true,
+            color: tokens.color.axisLabel
             // formatter: null
             // textStyle: {}
         },
 
         boundaryGap: [0, 0],
 
-        splitNumber: 5,
+        splitNumber: RADAR_DEFAULT_SPLIT_NUMBER,
 
         axisNameGap: 15,
 
@@ -202,7 +229,7 @@ class RadarModel extends ComponentModel<RadarOption> implements CoordinateSystem
         axisLine: zrUtil.merge(
             {
                 lineStyle: {
-                    color: '#bbb'
+                    color: tokens.color.neutral20
                 }
             },
             valueAxisDefault.axisLine

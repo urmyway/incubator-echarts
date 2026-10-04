@@ -19,21 +19,18 @@
 
 import * as zrUtil from 'zrender/src/core/util';
 import * as graphic from '../../util/graphic';
-import AxisBuilder, {AxisBuilderCfg} from './AxisBuilder';
 import AxisView from './AxisView';
-import * as cartesianAxisHelper from '../../coord/cartesian/cartesianAxisHelper';
 import {rectCoordAxisBuildSplitArea, rectCoordAxisHandleRemove} from './axisSplitHelper';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
 import CartesianAxisModel from '../../coord/cartesian/AxisModel';
 import GridModel from '../../coord/cartesian/GridModel';
 import { Payload } from '../../util/types';
+import { getAxisBreakHelper } from './axisBreakHelper';
+import { shouldAxisShow } from '../../coord/axisHelper';
 
-const axisBuilderAttrs = [
-    'axisLine', 'axisTickLabel', 'axisName'
-] as const;
 const selfBuilderAttrs = [
-    'splitArea', 'splitLine', 'minorSplitLine'
+    'splitArea', 'splitLine', 'minorSplitLine', 'breakArea'
 ] as const;
 
 class CartesianAxisView extends AxisView {
@@ -57,40 +54,26 @@ class CartesianAxisView extends AxisView {
 
         this.group.add(this._axisGroup);
 
-        if (!axisModel.get('show')) {
+        if (!shouldAxisShow(axisModel)) {
             return;
         }
 
-        const gridModel = axisModel.getCoordSysModel();
-
-        const layout = cartesianAxisHelper.layout(gridModel, axisModel);
-
-        const axisBuilder = new AxisBuilder(axisModel, zrUtil.extend({
-            handleAutoShown(elementType) {
-                const cartesians = gridModel.coordinateSystem.getCartesians();
-                for (let i = 0; i < cartesians.length; i++) {
-                    const otherAxisType = cartesians[i].getOtherAxis(axisModel.axis).type;
-                    if (otherAxisType === 'value' || otherAxisType === 'log') {
-                        // Still show axis tick or axisLine if other axis is value / log
-                        return true;
-                    }
-                }
-                // Not show axisTick or axisLine if other axis is category / time
-                return false;
-            }
-        } as AxisBuilderCfg, layout));
-
-        zrUtil.each(axisBuilderAttrs, axisBuilder.add, axisBuilder);
-
-        this._axisGroup.add(axisBuilder.getGroup());
+        this._axisGroup.add(axisModel.axis.axisBuilder.group);
 
         zrUtil.each(selfBuilderAttrs, function (name) {
             if (axisModel.get([name, 'show'])) {
-                axisElementBuilders[name](this, this._axisGroup, axisModel, gridModel);
+                axisElementBuilders[name](this, this._axisGroup, axisModel, axisModel.getCoordSysModel(), api);
             }
         }, this);
 
-        graphic.groupTransition(oldAxisGroup, this._axisGroup, axisModel);
+        // THIS is a special case for bar racing chart.
+        // Update the axis label from the natural initial layout to
+        // sorted layout should has no animation.
+        const isInitialSortFromBarRacing = payload && payload.type === 'changeAxisOrder' && payload.isInitSort;
+
+        if (!isInitialSortFromBarRacing) {
+            graphic.groupTransition(oldAxisGroup, this._axisGroup, axisModel);
+        }
 
         super.render(axisModel, ecModel, api, payload);
     }
@@ -101,12 +84,18 @@ class CartesianAxisView extends AxisView {
 }
 
 interface AxisElementBuilder {
-    (axisView: CartesianAxisView, axisGroup: graphic.Group, axisModel: CartesianAxisModel, gridModel: GridModel): void
+    (
+        axisView: CartesianAxisView,
+        axisGroup: graphic.Group,
+        axisModel: CartesianAxisModel,
+        gridModel: GridModel,
+        api: ExtensionAPI
+    ): void
 }
 
 const axisElementBuilders: Record<typeof selfBuilderAttrs[number], AxisElementBuilder> = {
 
-    splitLine(axisView, axisGroup, axisModel, gridModel) {
+    splitLine(axisView, axisGroup, axisModel, gridModel, api) {
         const axis = axisModel.axis;
 
         if (axis.scale.isBlank()) {
@@ -116,6 +105,8 @@ const axisElementBuilders: Record<typeof selfBuilderAttrs[number], AxisElementBu
         const splitLineModel = axisModel.getModel('splitLine');
         const lineStyleModel = splitLineModel.getModel('lineStyle');
         let lineColors = lineStyleModel.get('color');
+        const showMinLine = splitLineModel.get('showMinLine') !== false;
+        const showMaxLine = splitLineModel.get('showMaxLine') !== false;
 
         lineColors = zrUtil.isArray(lineColors) ? lineColors : [lineColors];
 
@@ -125,7 +116,9 @@ const axisElementBuilders: Record<typeof selfBuilderAttrs[number], AxisElementBu
         let lineCount = 0;
 
         const ticksCoords = axis.getTicksCoords({
-            tickModel: splitLineModel
+            tickModel: splitLineModel,
+            breakTicks: 'none',
+            pruneByBreak: 'preserve_extent_bound',
         });
 
         const p1 = [];
@@ -134,6 +127,12 @@ const axisElementBuilders: Record<typeof selfBuilderAttrs[number], AxisElementBu
         const lineStyle = lineStyleModel.getLineStyle();
         for (let i = 0; i < ticksCoords.length; i++) {
             const tickCoord = axis.toGlobalCoord(ticksCoords[i].coord);
+
+            if ((i === 0 && !showMinLine) || (i === ticksCoords.length - 1 && !showMaxLine)) {
+                continue;
+            }
+
+            const tickValue = ticksCoords[i].tickValue;
 
             if (isHorizontal) {
                 p1[0] = tickCoord;
@@ -149,10 +148,8 @@ const axisElementBuilders: Record<typeof selfBuilderAttrs[number], AxisElementBu
             }
 
             const colorIndex = (lineCount++) % lineColors.length;
-            const tickValue = ticksCoords[i].tickValue;
-            axisGroup.add(new graphic.Line({
-                anid: tickValue != null ? 'line_' + ticksCoords[i].tickValue : null,
-                subPixelOptimize: true,
+            const line = new graphic.Line({
+                anid: tickValue != null ? 'line_' + tickValue : null,
                 autoBatch: true,
                 shape: {
                     x1: p1[0],
@@ -164,11 +161,13 @@ const axisElementBuilders: Record<typeof selfBuilderAttrs[number], AxisElementBu
                     stroke: lineColors[colorIndex]
                 }, lineStyle),
                 silent: true
-            }));
+            });
+            graphic.subPixelOptimizeLine(line.shape, lineStyle.lineWidth);
+            axisGroup.add(line);
         }
     },
 
-    minorSplitLine(axisView, axisGroup, axisModel, gridModel) {
+    minorSplitLine(axisView, axisGroup, axisModel, gridModel, api) {
         const axis = axisModel.axis;
 
         const minorSplitLineModel = axisModel.getModel('minorSplitLine');
@@ -185,7 +184,6 @@ const axisElementBuilders: Record<typeof selfBuilderAttrs[number], AxisElementBu
         const p2 = [];
 
         const lineStyle = lineStyleModel.getLineStyle();
-
 
         for (let i = 0; i < minorTicksCoords.length; i++) {
             for (let k = 0; k < minorTicksCoords[i].length; k++) {
@@ -204,9 +202,8 @@ const axisElementBuilders: Record<typeof selfBuilderAttrs[number], AxisElementBu
                     p2[1] = tickCoord;
                 }
 
-                axisGroup.add(new graphic.Line({
+                const line = new graphic.Line({
                     anid: 'minor_line_' + minorTicksCoords[i][k].tickValue,
-                    subPixelOptimize: true,
                     autoBatch: true,
                     shape: {
                         x1: p1[0],
@@ -216,13 +213,25 @@ const axisElementBuilders: Record<typeof selfBuilderAttrs[number], AxisElementBu
                     },
                     style: lineStyle,
                     silent: true
-                }));
+                });
+                graphic.subPixelOptimizeLine(line.shape, lineStyle.lineWidth);
+                axisGroup.add(line);
             }
         }
     },
 
-    splitArea(axisView, axisGroup, axisModel, gridModel) {
+    splitArea(axisView, axisGroup, axisModel, gridModel, api) {
         rectCoordAxisBuildSplitArea(axisView, axisGroup, axisModel, gridModel);
+    },
+
+    breakArea(axisView, axisGroup, axisModel, gridModel, api) {
+        const axisBreakHelper = getAxisBreakHelper();
+        const scale = axisModel.axis.scale;
+        if (axisBreakHelper && scale.type !== 'ordinal') {
+            axisBreakHelper.rectCoordBuildBreakAxis(
+                axisGroup, axisView, axisModel, gridModel.coordinateSystem.getRect(), api
+            );
+        }
     }
 };
 

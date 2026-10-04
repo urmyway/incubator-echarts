@@ -30,14 +30,17 @@ import {
     CallbackDataParams,
     StatesOptionMixin,
     OptionDataItemObject,
-    DefaultEmphasisFocus
+    DefaultEmphasisFocus,
+    SunburstColorByMixin,
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin
 } from '../../util/types';
 import GlobalModel from '../../model/Global';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import Model from '../../model/Model';
 import enableAriaDecalForTree from '../helper/enableAriaDecalForTree';
 
-interface SunburstItemStyleOption extends ItemStyleOption {
+interface SunburstItemStyleOption<TCbParams = never> extends ItemStyleOption<TCbParams> {
     // can be 10
     // which means that both innerCornerRadius and outerCornerRadius are 10
     // can also be an array [20, 10]
@@ -49,7 +52,7 @@ interface SunburstItemStyleOption extends ItemStyleOption {
     borderRadius?: (number | string)[] | number | string
 }
 
-interface SunburstLabelOption extends Omit<SeriesLabelOption, 'rotate' | 'position'> {
+interface SunburstLabelOption extends Omit<SeriesLabelOption<SunburstDataParams>, 'rotate' | 'position'> {
     rotate?: 'radial' | 'tangential' | number
     minAngle?: number
     silent?: boolean
@@ -64,22 +67,23 @@ interface SunburstDataParams extends CallbackDataParams {
     }[]
 }
 
-interface ExtraStateOption {
+interface SunburstStatesMixin {
     emphasis?: {
-        focus?: DefaultEmphasisFocus | 'descendant' | 'ancestor'
+        focus?: DefaultEmphasisFocus | 'descendant' | 'ancestor' | 'relative'
     }
 }
 
-export interface SunburstStateOption {
-    itemStyle?: SunburstItemStyleOption
+export interface SunburstStateOption<TCbParams = never> {
+    itemStyle?: SunburstItemStyleOption<TCbParams>
     label?: SunburstLabelOption
 }
 
 export interface SunburstSeriesNodeItemOption extends
-    SunburstStateOption, StatesOptionMixin<SunburstStateOption, ExtraStateOption>,
+    SunburstStateOption<SunburstDataParams>,
+    StatesOptionMixin<SunburstStateOption<SunburstDataParams>, SunburstStatesMixin>,
     OptionDataItemObject<OptionDataValue>
 {
-    nodeClick?: 'rootToNode' | 'link'
+    nodeClick?: 'rootToNode' | 'link' | false
     // Available when nodeClick is link
     link?: string
     target?: string
@@ -90,7 +94,20 @@ export interface SunburstSeriesNodeItemOption extends
 
     cursor?: string
 }
-export interface SunburstSeriesLevelOption extends SunburstStateOption, StatesOptionMixin<SunburstStateOption> {
+export interface SunburstSeriesLevelOption extends
+    SunburstStateOption<SunburstDataParams>,
+    StatesOptionMixin<SunburstStateOption<SunburstDataParams>, SunburstStatesMixin> {
+
+    radius?: (number | string)[]
+    /**
+     * @deprecated use radius instead
+     */
+    r?: number | string
+    /**
+     * @deprecated use radius instead
+     */
+    r0?: number | string
+
     highlight?: {
         itemStyle?: SunburstItemStyleOption
         label?: SunburstLabelOption
@@ -104,7 +121,11 @@ interface SortParam {
     getValue(): number
 }
 export interface SunburstSeriesOption extends
-    SeriesOption<SunburstStateOption, ExtraStateOption>, SunburstStateOption,
+    SeriesOption<SunburstStateOption<SunburstDataParams>, SunburstStatesMixin>,
+    SunburstStateOption<SunburstDataParams>,
+    SunburstColorByMixin,
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin,
     CircleLayoutOptionMixin {
 
     type?: 'sunburst'
@@ -123,9 +144,11 @@ export interface SunburstSeriesOption extends
      */
     // highlightPolicy?: 'descendant' | 'ancestor' | 'self'
 
-    nodeClick?: 'rootToNode' | 'link'
+    nodeClick?: 'rootToNode' | 'link' | false
 
     renderLabelForZeroData?: boolean
+
+    data?: SunburstSeriesNodeItemOption[]
 
     levels?: SunburstSeriesLevelOption[]
 
@@ -140,14 +163,18 @@ interface SunburstSeriesModel {
         state?: 'emphasis' | 'normal' | 'highlight' | 'blur' | 'select'
     ): string
 }
+
+export const SERIES_TYPE_SUNBURST = 'sunburst';
+
 class SunburstSeriesModel extends SeriesModel<SunburstSeriesOption> {
 
-    static readonly type = 'series.sunburst';
+    static readonly type = 'series.' + SERIES_TYPE_SUNBURST;
     readonly type = SunburstSeriesModel.type;
 
     ignoreStyleOnData = true;
 
     private _viewRoot: TreeNode;
+    private _levelModels: Model<SunburstSeriesLevelOption>[];
 
     getInitialData(option: SunburstSeriesOption, ecModel: GlobalModel) {
         // Create a virtual root.
@@ -155,16 +182,17 @@ class SunburstSeriesModel extends SeriesModel<SunburstSeriesOption> {
 
         completeTreeValue(root);
 
-        const levelModels = zrUtil.map(option.levels || [], function (levelDefine) {
-            return new Model(levelDefine, this, ecModel);
-        }, this);
+        const levelModels = this._levelModels =
+            zrUtil.map(option.levels || [], function (levelDefine) {
+                return new Model(levelDefine, this, ecModel);
+            }, this);
 
         // Make sure always a new tree is created when setOption,
         // in TreemapView, we check whether oldTree === newTree
         // to choose mappings approach among old shapes and new shapes.
         const tree = Tree.createTree(root, this, beforeLink);
 
-        function beforeLink(nodeData: List) {
+        function beforeLink(nodeData: SeriesData) {
             nodeData.wrapMethod('getItemModel', function (model, idx) {
                 const node = tree.getNodeByDataIndex(idx);
                 const levelModel = levelModels[node.depth];
@@ -191,8 +219,12 @@ class SunburstSeriesModel extends SeriesModel<SunburstSeriesOption> {
         return params;
     }
 
+    getLevelModel(node: TreeNode) {
+        return this._levelModels && this._levelModels[node.depth];
+    }
+
     static defaultOption: SunburstSeriesOption = {
-        zlevel: 0,
+        // zlevel: 0,
         z: 2,
 
         // 默认全局居中
@@ -217,7 +249,7 @@ class SunburstSeriesModel extends SeriesModel<SunburstSeriesOption> {
             rotate: 'radial',
             show: true,
             opacity: 1,
-            // 'left' is for inner side of inside, and 'right' is for outter
+            // 'left' is for inner side of inside, and 'right' is for outer
             // side for inside
             align: 'center',
             position: 'inside',
@@ -248,14 +280,12 @@ class SunburstSeriesModel extends SeriesModel<SunburstSeriesOption> {
             }
         },
 
-        // Animation type canbe expansion, scale
+        // Animation type can be expansion, scale.
         animationType: 'expansion',
         animationDuration: 1000,
         animationDurationUpdate: 500,
 
         data: [],
-
-        levels: [],
 
         /**
          * Sort order.

@@ -20,7 +20,7 @@
 
 import {each, bind} from 'zrender/src/core/util';
 import SeriesModel from '../../model/Series';
-import createListFromArray from '../helper/createListFromArray';
+import createSeriesData from '../helper/createSeriesData';
 import {
     SeriesOption,
     SeriesEncodeOptionMixin,
@@ -32,27 +32,38 @@ import {
     StatesOptionMixin,
     OptionEncodeValue,
     Dictionary,
-    OptionEncode
- } from '../../util/types';
+    OptionEncode,
+    DefaultStatesMixinEmphasis,
+    ZRColor,
+    CallbackDataParams,
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin
+} from '../../util/types';
 import GlobalModel from '../../model/Global';
-import List from '../../data/List';
+import SeriesData from '../../data/SeriesData';
 import { ParallelActiveState, ParallelAxisOption } from '../../coord/parallel/AxisModel';
 import Parallel from '../../coord/parallel/Parallel';
 import ParallelModel from '../../coord/parallel/ParallelModel';
 
 type ParallelSeriesDataValue = OptionDataValue[];
 
-export interface ParallelStateOption {
-    lineStyle?: LineStyleOption
+interface ParallelStatesMixin {
+    emphasis?: DefaultStatesMixinEmphasis
+}
+export interface ParallelStateOption<TCbParams = never> {
+    lineStyle?: LineStyleOption<(TCbParams extends never ? never : (params: TCbParams) => ZRColor) | ZRColor>
     label?: SeriesLabelOption
 }
 
-export interface ParallelSeriesDataItemOption extends ParallelStateOption, StatesOptionMixin<ParallelStateOption> {
-    value?: ParallelSeriesDataValue[]
+export interface ParallelSeriesDataItemOption extends ParallelStateOption,
+    StatesOptionMixin<ParallelStateOption, ParallelStatesMixin> {
+    value?: ParallelSeriesDataValue
 }
-
 export interface ParallelSeriesOption extends
-    SeriesOption<ParallelStateOption>, ParallelStateOption,
+    SeriesOption<ParallelStateOption<CallbackDataParams>, ParallelStatesMixin>,
+    ParallelStateOption<CallbackDataParams>,
+    ComponentOnCalendarOptionMixin,
+    ComponentOnMatrixOptionMixin,
     SeriesEncodeOptionMixin {
 
     type?: 'parallel';
@@ -70,13 +81,10 @@ export interface ParallelSeriesOption extends
 
     parallelAxisDefault?: ParallelAxisOption;
 
-    emphasis?: {
-        label?: SeriesLabelOption;
-        lineStyle?: LineStyleOption;
-    }
 
     data?: (ParallelSeriesDataValue | ParallelSeriesDataItemOption)[]
 }
+
 
 class ParallelSeriesModel extends SeriesModel<ParallelSeriesOption> {
 
@@ -91,8 +99,8 @@ class ParallelSeriesModel extends SeriesModel<ParallelSeriesOption> {
     coordinateSystem: Parallel;
 
 
-    getInitialData(this: ParallelSeriesModel, option: ParallelSeriesOption, ecModel: GlobalModel): List {
-        return createListFromArray(this.getSource(), this, {
+    getInitialData(this: ParallelSeriesModel, option: ParallelSeriesOption, ecModel: GlobalModel): SeriesData {
+        return createSeriesData(null, this, {
             useEncodeDefaulter: bind(makeDefaultEncode, null, this)
         });
     }
@@ -117,7 +125,7 @@ class ParallelSeriesModel extends SeriesModel<ParallelSeriesOption> {
     }
 
     static defaultOption: ParallelSeriesOption = {
-        zlevel: 0,
+        // zlevel: 0,
         z: 2,
 
         coordinateSystem: 'parallel',
@@ -141,7 +149,7 @@ class ParallelSeriesModel extends SeriesModel<ParallelSeriesOption> {
             }
         },
 
-        progressive: 500,
+        progressive: 300,
         smooth: false, // true | false | number
 
         animationEasing: 'linear'

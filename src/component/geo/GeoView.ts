@@ -23,7 +23,7 @@ import ComponentView from '../../view/Component';
 import GlobalModel from '../../model/Global';
 import ExtensionAPI from '../../core/ExtensionAPI';
 import GeoModel from '../../coord/geo/GeoModel';
-import { Payload, ZRElementEvent, ECEventData } from '../../util/types';
+import { Payload, ZRElementEvent, ECEventData, RoamPayload } from '../../util/types';
 import { getECData } from '../../util/innerStore';
 import { findEventDispatcher } from '../../util/event';
 import Element from 'zrender/src/Element';
@@ -42,31 +42,43 @@ class GeoView extends ComponentView {
     focusBlurEnabled = true;
 
     init(ecModel: GlobalModel, api: ExtensionAPI) {
-        const mapDraw = new MapDraw(api);
-        this._mapDraw = mapDraw;
-
-        this.group.add(mapDraw.group);
-
         this._api = api;
     }
 
     render(
         geoModel: GeoModel, ecModel: GlobalModel, api: ExtensionAPI, payload: Payload
     ): void {
-        const mapDraw = this._mapDraw;
-        if (geoModel.get('show')) {
-            mapDraw.draw(geoModel, ecModel, api, this, payload);
-        }
-        else {
-            this._mapDraw.group.removeAll();
-        }
-
-        mapDraw.group.on('click', this._handleRegionClick, this);
-        mapDraw.group.silent = geoModel.get('silent');
-
         this._model = geoModel;
 
+        if (!geoModel.get('show')) {
+            this._mapDraw && this._mapDraw.remove();
+            this._mapDraw = null;
+            return;
+        }
+
+        if (!this._mapDraw) {
+            this._mapDraw = new MapDraw(api);
+        }
+        const mapDraw = this._mapDraw;
+        mapDraw.draw(geoModel, ecModel, api, this, payload);
+        mapDraw.group.on('click', this._handleRegionClick, this);
+        mapDraw.group.silent = geoModel.get('silent');
+        this.group.add(mapDraw.group);
         this.updateSelectStatus(geoModel, ecModel, api);
+    }
+
+    /**
+     * @implements RoamHostView['__updateOnOwnRoam']
+     */
+    __updateOnOwnRoam(
+        payload: RoamPayload,
+        model: GeoModel,
+        api: ExtensionAPI
+    ): void {
+        const mapDraw = this._mapDraw;
+        if (mapDraw) {
+            mapDraw.__updateOnOwnRoam(model);
+        }
     }
 
     private _handleRegionClick(e: ZRElementEvent) {

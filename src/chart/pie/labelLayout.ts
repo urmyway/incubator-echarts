@@ -25,9 +25,11 @@ import { HorizontalAlign, ZRTextAlign } from '../../util/types';
 import { Sector, Polyline, Point } from '../../util/graphic';
 import ZRText from 'zrender/src/graphic/Text';
 import BoundingRect, {RectLike} from 'zrender/src/core/BoundingRect';
-import { each } from 'zrender/src/core/util';
+import { each, isNumber } from 'zrender/src/core/util';
 import { limitTurnAngle, limitSurfaceAngle } from '../../label/labelGuideHelper';
-import { shiftLayoutOnY } from '../../label/labelLayoutHelper';
+import {
+    computeLabelGeometry, LabelGeometry, shiftLayoutOnXY
+} from '../../label/labelLayoutHelper';
 
 const RADIAN = Math.PI / 180;
 
@@ -47,6 +49,14 @@ interface LabelLayout {
     edgeDistance: number
     bleedMargin: PieSeriesOption['label']['bleedMargin']
     rect: BoundingRect
+    /**
+     * user-set style.width.
+     * This is useful because label.style.width might be changed
+     * by constrainTextWidth.
+     */
+    labelStyleWidth: number
+    unconstrainedWidth: number
+    targetTextWidth?: number
 }
 
 function adjustSingleSide(
@@ -81,8 +91,13 @@ function adjustSingleSide(
             const rA = r + item.len;
             const rA2 = rA * rA;
             // Use ellipse implicit function to calculate x
-            const dx = Math.sqrt((1 - Math.abs(dy * dy / rB2)) * rA2);
-            item.label.x = cx + (dx + item.len2) * dir;
+            const dx = Math.sqrt(Math.abs((1 - dy * dy / rB2) * rA2));
+            const newX = cx + (dx + item.len2) * dir;
+            const deltaX = newX - item.label.x;
+            const newTargetWidth = item.targetTextWidth - deltaX * dir;
+            // text x is changed, so need to recalculate width.
+            constrainTextWidth(item, newTargetWidth, true);
+            item.label.x = newX;
         }
     }
 
@@ -99,7 +114,7 @@ function adjustSingleSide(
             const item = items[i];
             const semi = item.label.y > cy ? bottomSemi : topSemi;
             const dy = Math.abs(item.label.y - cy);
-            if (dy > semi.maxY) {
+            if (dy >= semi.maxY) {
                 const dx = item.label.x - cx - item.len2 * dir;
                 // horizontal r is always same with original r because x is not changed.
                 const rA = r + item.len;
@@ -126,7 +141,7 @@ function adjustSingleSide(
         }
     }
 
-    if (shiftLayoutOnY(list, viewTop, viewTop + viewHeight)) {
+    if (shiftLayoutOnXY(list, 1, viewTop, viewTop + viewHeight)) {
         recalculateX(list);
     }
 }
@@ -160,23 +175,18 @@ function avoidOverlap(
         }
     }
 
-    adjustSingleSide(rightList, cx, cy, r, 1, viewWidth, viewHeight, viewLeft, viewTop, rightmostX);
-    adjustSingleSide(leftList, cx, cy, r, -1, viewWidth, viewHeight, viewLeft, viewTop, leftmostX);
-
     for (let i = 0; i < labelLayoutList.length; i++) {
         const layout = labelLayoutList[i];
-        const label = layout.label;
-        if (isPositionCenter(layout)) {
-            continue;
-        }
+        if (!isPositionCenter(layout) && layout.linePoints) {
+            if (layout.labelStyleWidth != null) {
+                continue;
+            }
 
-        const linePoints = layout.linePoints;
-        if (linePoints) {
-            const isAlignToEdge = layout.labelAlignTo === 'edge';
+            const label = layout.label;
+            const linePoints = layout.linePoints;
 
-            let realTextWidth = layout.rect.width;
             let targetTextWidth;
-            if (isAlignToEdge) {
+            if (layout.labelAlignTo === 'edge') {
                 if (label.x < cx) {
                     targetTextWidth = linePoints[2][0] - layout.labelDistance
                             - viewLeft - layout.edgeDistance;
@@ -184,6 +194,14 @@ function avoidOverlap(
                 else {
                     targetTextWidth = viewLeft + viewWidth - layout.edgeDistance
                             - linePoints[2][0] - layout.labelDistance;
+                }
+            }
+            else if (layout.labelAlignTo === 'labelLine') {
+                if (label.x < cx) {
+                    targetTextWidth = leftmostX - viewLeft - layout.bleedMargin;
+                }
+                else {
+                    targetTextWidth = viewLeft + viewWidth - rightmostX - layout.bleedMargin;
                 }
             }
             else {
@@ -194,16 +212,26 @@ function avoidOverlap(
                     targetTextWidth = viewLeft + viewWidth - label.x - layout.bleedMargin;
                 }
             }
-            if (targetTextWidth < layout.rect.width) {
-                // TODOTODO
-                // layout.text = textContain.truncateText(layout.text, targetTextWidth, layout.font);
-                layout.label.style.width = targetTextWidth;
-                if (layout.labelAlignTo === 'edge') {
-                    realTextWidth = targetTextWidth;
-                    // realTextWidth = textContain.getWidth(layout.text, layout.font);
-                }
-            }
+            layout.targetTextWidth = targetTextWidth;
 
+            constrainTextWidth(layout, targetTextWidth, false);
+        }
+    }
+
+    adjustSingleSide(rightList, cx, cy, r, 1, viewWidth, viewHeight, viewLeft, viewTop, rightmostX);
+    adjustSingleSide(leftList, cx, cy, r, -1, viewWidth, viewHeight, viewLeft, viewTop, leftmostX);
+
+    for (let i = 0; i < labelLayoutList.length; i++) {
+        const layout = labelLayoutList[i];
+        if (!isPositionCenter(layout) && layout.linePoints) {
+            const label = layout.label;
+            const linePoints = layout.linePoints;
+            const isAlignToEdge = layout.labelAlignTo === 'edge';
+            const padding = label.style.padding as number[];
+            const paddingH = padding ? padding[1] + padding[3] : 0;
+            // textRect.width already contains paddingH if bgColor is set
+            const extraPaddingH = label.style.backgroundColor ? 0 : paddingH;
+            const realTextWidth = layout.rect.width + extraPaddingH;
             const dist = linePoints[1][0] - linePoints[2][0];
             if (isAlignToEdge) {
                 if (label.x < cx) {
@@ -227,6 +255,91 @@ function avoidOverlap(
         }
     }
 }
+
+/**
+ * Set max width of each label, and then wrap each label to the max width.
+ *
+ * @param layout label layout
+ * @param availableWidth max width for the label to display
+ * @param forceRecalculate recaculate the text layout even if the current width
+ * is smaller than `availableWidth`. This is useful when the text was previously
+ * wrapped by calling `constrainTextWidth` but now `availableWidth` changed, in
+ * which case, previous wrapping should be redo.
+ */
+function constrainTextWidth(
+    layout: LabelLayout,
+    availableWidth: number,
+    forceRecalculate: boolean
+) {
+    if (layout.labelStyleWidth != null) {
+        // User-defined style.width has the highest priority.
+        return;
+    }
+
+    const label = layout.label;
+    const style = label.style;
+    const textRect = layout.rect;
+    const bgColor = style.backgroundColor;
+    const padding = style.padding as number[];
+    const paddingH = padding ? padding[1] + padding[3] : 0;
+    const overflow = style.overflow;
+
+    // textRect.width already contains paddingH if bgColor is set
+    const oldOuterWidth = textRect.width + (bgColor ? 0 : paddingH);
+    if (availableWidth < oldOuterWidth || forceRecalculate) {
+
+        if (overflow && overflow.match('break')) {
+            // Temporarily set background to be null to calculate
+            // the bounding box without background.
+            label.setStyle('backgroundColor', null);
+            // Set constraining width
+            label.setStyle('width', availableWidth - paddingH);
+
+            // This is the real bounding box of the text without padding.
+            const innerRect = label.getBoundingRect();
+
+            label.setStyle('width', Math.ceil(innerRect.width));
+            label.setStyle('backgroundColor', bgColor);
+        }
+        else {
+            const availableInnerWidth = availableWidth - paddingH;
+            const newWidth = availableWidth < oldOuterWidth
+                // Current text is too wide, use `availableWidth` as max width.
+                ? availableInnerWidth
+                : (
+                    // Current available width is enough, but the text may have
+                    // already been wrapped with a smaller available width.
+                    forceRecalculate
+                        ? (availableInnerWidth > layout.unconstrainedWidth
+                            // Current available is larger than text width,
+                            // so don't constrain width (otherwise it may have
+                            // empty space in the background).
+                            ? null
+                            // Current available is smaller than text width, so
+                            // use the current available width as constraining
+                            // width.
+                            : availableInnerWidth
+                        )
+                    // Current available width is enough, so no need to
+                    // constrain.
+                    : null
+                );
+            label.setStyle('width', newWidth);
+        }
+
+        computeLabelGlobalRect(textRect, label);
+    }
+}
+
+function computeLabelGlobalRect(out: BoundingRect, label: ZRText): void {
+    _tmpLabelGeometry.rect = out;
+    computeLabelGeometry(_tmpLabelGeometry, label, _computeLabelGeometryOpt);
+}
+const _computeLabelGeometryOpt = {
+    minMarginForce: [null, 0, null, 0],
+    marginDefault: [1, 0, 1, 0], // Arbitrary value
+};
+const _tmpLabelGeometry: Partial<LabelGeometry> = {};
 
 function isPositionCenter(sectorShape: LabelLayout) {
     // Not change x for center label
@@ -279,7 +392,11 @@ export default function pieLabelLayout(
         const labelDistance = labelModel.get('distanceToLabelLine');
         const labelAlignTo = labelModel.get('alignTo');
         const edgeDistance = parsePercent(labelModel.get('edgeDistance'), viewWidth);
-        const bleedMargin = labelModel.get('bleedMargin');
+        let bleedMargin = labelModel.get('bleedMargin');
+        if (bleedMargin == null) {
+            // An arbitrary strategy for small viewRect - especial pie is layout in calendar or matrix coord sys.
+            bleedMargin = Math.min(viewWidth, viewHeight) > 200 ? 10 : 2;
+        }
 
         const labelLineModel = itemModel.getModel('labelLine');
         let labelLineLen = labelLineModel.get('length');
@@ -290,6 +407,10 @@ export default function pieLabelLayout(
         if (Math.abs(sectorShape.endAngle - sectorShape.startAngle) < minShowLabelRadian) {
             each(label.states, setNotShow);
             label.ignore = true;
+            if (labelLine) {
+                each(labelLine.states, setNotShow);
+                labelLine.ignore = true;
+            }
             return;
         }
 
@@ -350,15 +471,31 @@ export default function pieLabelLayout(
                     : (nx > 0 ? 'left' : 'right'));
         }
 
-        let labelRotate;
+        const PI = Math.PI;
+        let labelRotate = 0;
         const rotate = labelModel.get('rotate');
-        if (typeof rotate === 'number') {
-            labelRotate = rotate * (Math.PI / 180);
+        if (isNumber(rotate)) {
+            labelRotate = rotate * (PI / 180);
         }
-        else {
-            labelRotate = rotate
-                ? (nx < 0 ? -midAngle + Math.PI : -midAngle)
-                : 0;
+        else if (labelPosition === 'center') {
+            labelRotate = 0;
+        }
+        else if (rotate === 'radial' || rotate === true) {
+            const radialAngle = nx < 0 ? -midAngle + PI : -midAngle;
+            labelRotate = radialAngle;
+        }
+        else if (rotate === 'tangential' || rotate === 'tangential-noflip'
+            && labelPosition !== 'outside' && labelPosition !== 'outer'
+        ) {
+            let rad = Math.atan2(nx, ny);
+            if (rad < 0) {
+                rad = PI * 2 + rad;
+            }
+            const isDown = ny > 0;
+            if (isDown && rotate !== 'tangential-noflip') {
+                rad = PI + rad;
+            }
+            labelRotate = rad - PI;
         }
 
         hasLabelRotate = !!labelRotate;
@@ -373,12 +510,9 @@ export default function pieLabelLayout(
 
         // Not sectorShape the inside label
         if (!isLabelInside) {
-            const textRect = label.getBoundingRect().clone();
-            textRect.applyTransform(label.getComputedTransform());
-            // Text has a default 1px stroke. Exclude this.
-            const margin = (label.style.margin || 0) + 2.1;
-            textRect.y -= margin / 2;
-            textRect.height += margin;
+
+            const textRect = new BoundingRect(0, 0, 0, 0);
+            computeLabelGlobalRect(textRect, label);
 
             labelLayoutList.push({
                 label,
@@ -395,7 +529,9 @@ export default function pieLabelLayout(
                 labelAlignTo: labelAlignTo,
                 edgeDistance: edgeDistance,
                 bleedMargin: bleedMargin,
-                rect: textRect
+                rect: textRect,
+                unconstrainedWidth: textRect.width,
+                labelStyleWidth: label.style.width
             });
         }
         else {
